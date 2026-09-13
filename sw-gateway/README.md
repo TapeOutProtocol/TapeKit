@@ -42,6 +42,18 @@ node test/e2e.mjs
 
 ## 部署（任何人都可以架）
 
+**最省事的方式：Cloudflare Workers 静态资源**（官方网关 tapekit.org 就是这样架的，零服务器）：
+
+```bash
+npm run build:gateway        # 生成 dist/gateway/
+npx wrangler login           # 一次性，浏览器里点 Allow
+npx wrangler deploy          # 按仓库根目录的 wrangler.toml 发布
+```
+
+`wrangler.toml` 里的 `routes` 把 `你的域名/*` 和 `*.你的域名/*` 都指到这个 Worker；域名要先加进同一个 Cloudflare 账号，并在 DNS 里加一条 `*` 的 A 记录（内容随便填，例如 `192.0.2.1`，开橙云代理）——Worker 只在代理过的主机名上生效。`not_found_handling = "single-page-application"` 就是「其它路径一律回引导页」这条规则。
+
+**其它静态托管**：
+
 把这些文件按下面的路径放到一个 https 域名下，并让通配子域名 `*.<网关域名>` 也指向它：
 
 ```
