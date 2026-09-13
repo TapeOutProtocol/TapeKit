@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>tape://</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<section>
+  <h2>打开链上网站</h2>
+  <form id="open" autocomplete="off">
+    <input id="q" spellcheck="false" placeholder="4246.0.tape、#4246@0 或容器地址">
+    <button type="submit">打开</button>
+  </form>
+  <p class="hint">也可以在地址栏输入 <code>tape</code>、空格、再输入名字。</p>
+  <label class="hint">网关域名（可选）<input id="gateway" spellcheck="false" placeholder="例如 tape.example.org；留空用扩展内的沙盒查看器"></label>
+  <p class="hint" id="mode">—</p>
+</section>
+<section>
+  <h2>校验当前网页</h2>
+  <p class="hint" id="host">—</p>
+  <button id="check" type="button">与链上逐字节核对</button>
+  <div id="result" class="result" hidden></div>
+</section>
+<script type="module" src="popup.js"></script>
+</body>
+</html>

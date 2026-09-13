@@ -1,0 +1,6 @@
+{
+  "_comment": "网关架设者的配置。rpcUrls 留空用内核默认的 4 家公共节点；要加自己的节点请写限流代理地址，不要把带密钥的地址写进这个公开文件。reportUrl 里的 {name} 会换成链上名字。",
+  "rpcUrls": [],
+  "blocklistUrl": "/.tape/blocklist.txt",
+  "reportUrl": ""
+}

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "tape:// 链上网站",
+  "version": "0.2.0",
+  "description": "直接从 BNB 链读取并校验 HashPort 链上网站；也能校验当前网页是否与链上发布的字节一致。",
+  "action": {
+    "default_title": "tape:// 链上网站",
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "omnibox": {
+    "keyword": "tape"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "sandbox": {
+    "pages": [
+      "viewer/frame.html"
+    ]
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'none'; form-action 'none'",
+    "sandbox": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' blob:; img-src blob: data:; font-src blob: data:; media-src blob: data:; connect-src blob: data: https://bsc-dataseed.bnbchain.org https://bsc-rpc.publicnode.com https://bsc-dataseed1.defibit.io https://bsc-dataseed1.ninicoin.io; worker-src blob:; frame-src blob:; form-action 'none'"
+  }
+}

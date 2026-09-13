@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>render fixture</title>
+<!-- 渲染器回归测试（只在本机开发服务器下用）：把一组假站点文件交给 viewer/frame.html，检查
+     CSS @import/url()、模块互相导入与动态导入、fetch、静态与动态图片、站内/站外链接、锚点、
+     链外资源被 CSP 拦截并上报、沙盒隔离（不能写存储、不能碰父页面）。结果放在 window.__results。 -->
+<iframe id="f" sandbox="allow-scripts" src="/viewer/frame.html" style="width:800px;height:420px;border:1px solid #ccc"></iframe>
+<pre id="log"></pre>
+<script type="module">
+const enc = new TextEncoder();
+const files = [
+  ['index.html', 'text/html; charset=utf-8', `<!doctype html><html><head><title>fixture home</title><link rel="stylesheet" href="css/site.css"><script type="module" src="js/app.js"><\/script></head>
+<body><h1 id="h">Hello chain</h1><img id="logo" src="img/logo.svg" alt="">
+<p><a id="p2" href="page2.html">page 2</a> · <a id="ext" href="https://example.com/">external</a> · <a id="top" href="#h">top</a></p>
+<img id="tracker" src="https://example.com/tracker.png" alt=""></body></html>`],
+  ['css/site.css', 'text/css', '@import "base.css"; body{background:url(../img/bg.svg)} h1{color:rgb(1, 2, 3)}'],
+  ['css/base.css', 'text/css', 'html{font-family:serif} .ok{color:green}'],
+  ['img/logo.svg', 'image/svg+xml', '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><rect width="12" height="12" fill="red"/></svg>'],
+  ['img/bg.svg', 'image/svg+xml', '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>'],
+  ['js/app.js', 'text/javascript', `import { hello } from './lib/util.js';
+const results = { util: hello() };
+results.lazy = (await import('./lib/lazy.js')).default;
+results.fetch = (await (await fetch('data.json')).json()).v;
+results.fetch404 = (await fetch('nope.json')).status;
+results.css = getComputedStyle(document.getElementById('h')).color;
+const logo = document.getElementById('logo');
+results.img = await new Promise((r) => { if (logo.complete && logo.naturalWidth) r(logo.naturalWidth); else { logo.onload = () => r(logo.naturalWidth); logo.onerror = () => r('err'); } });
+const dyn = document.createElement('img'); dyn.src = 'img/logo.svg'; document.body.append(dyn);
+results.dynImg = await new Promise((r) => { dyn.onload = () => r('ok'); dyn.onerror = () => r('err'); setTimeout(() => r('timeout'), 3000); });
+try { localStorage.setItem('x', '1'); results.storage = 'writable'; } catch { results.storage = 'blocked'; }
+try { results.parent = String(parent.document.title); } catch { results.parent = 'blocked'; }
+const before = location.href;
+document.getElementById('top').click(); document.getElementById('p2').click(); document.getElementById('ext').click();
+results.stayed = location.href === before;
+parent.postMessage({ type: 'fixture-results', results }, '*');`],
+  ['js/lib/util.js', 'text/javascript', "export const hello = () => 'util-ok';"],
+  ['js/lib/lazy.js', 'text/javascript', "export default 'lazy-ok';"],
+  ['data.json', 'application/json', '{"v":"fetch-ok"}'],
+  ['page2.html', 'text/html; charset=utf-8', '<!doctype html><title>p2</title><h1>page 2</h1>'],
+].map(([path, type, text]) => ({ path, type, bytes: enc.encode(text).buffer }));
+
+window.__results = { messages: [], app: null };
+const f = document.getElementById('f');
+addEventListener('message', (ev) => {
+  if (ev.source !== f.contentWindow || !ev.data) return;
+  if (ev.data.type === 'hp-ready') {
+    // 按需模式：只先给入口和样式（含 base.css、图片留给 hp-need），其余全部由沙盒运行时向外壳要
+    const initial = files.filter((x) => ['index.html', 'css/site.css', 'css/base.css'].includes(x.path) || /\.js$/.test(x.path)).map((x) => ({ ...x, bytes: x.bytes.slice(0) }));
+    f.contentWindow.postMessage({ type: 'hp-render', files: initial, entry: 'index.html', known: files.map((x) => x.path) }, '*', initial.map((x) => x.bytes));
+  } else if (ev.data.type === 'hp-need') {
+    window.__results.needs = (window.__results.needs || []).concat(ev.data.path);
+    const x = files.find((y) => y.path === ev.data.path);
+    if (x) { const b = x.bytes.slice(0); f.contentWindow.postMessage({ type: 'hp-file', id: ev.data.id, path: x.path, ok: true, bytes: b, contentType: x.type }, '*', [b]); }
+    else f.contentWindow.postMessage({ type: 'hp-file', id: ev.data.id, path: ev.data.path, ok: false }, '*');
+  }
+  else if (ev.data.type === 'fixture-results') window.__results.app = ev.data.results;
+  else window.__results.messages.push(ev.data);
+  document.getElementById('log').textContent = JSON.stringify(window.__results, null, 1);
+});
+</script>

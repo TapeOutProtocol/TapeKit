@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<!-- 沙盒渲染页：由查看器以 sandbox="allow-scripts"（不带 allow-same-origin）加载，来源是不透明的。
+     站点代码只在这里运行：拿不到查看器页面、拿不到任何持久存储、链外请求被 CSP 拦截（SPEC.md §7）。
+     文件按需从外壳要：一开始只给入口页和它引用到的资源；页面运行中还要别的文件，就发 hp-need 让外壳去链上读。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' blob:; img-src blob: data:; font-src blob: data:; media-src blob: data:; connect-src blob: data: https://bsc-dataseed.bnbchain.org https://bsc-rpc.publicnode.com https://bsc-dataseed1.defibit.io https://bsc-dataseed1.ninicoin.io; worker-src blob:; frame-src blob:; form-action 'none'; base-uri https://site.tape.invalid">
+<title>tape</title>
+</head>
+<body>
+<script>
+(() => {
+  'use strict';
+  // 站点文件在这个假来源下「寻址」：https://site.tape.invalid/<路径>。.invalid 顶级域名保证永远解析不到，
+  // 任何没被改写掉的请求都会失败（并被 CSP 拦下上报），不会意外打到真实服务器。
+  const BASE = 'https://site.tape.invalid/';
+  const BASE_ORIGIN = new URL(BASE).origin;
+  const CSP = document.querySelector('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
+  const post = (m, transfer) => { try { parent.postMessage(m, '*', transfer); } catch {} };
+
+  addEventListener('message', (ev) => {
+    if (ev.source !== parent || !ev.data || ev.data.type !== 'hp-render') return;
+    if (window.__hpStarted) return;   // 每个 iframe 只渲染一次；站内跳转由查看器重建 iframe（全新的不透明来源、全新的全局状态）
+    window.__hpStarted = true;
+    try { render(ev.data); } catch (e) { post({ type: 'hp-error', message: String((e && e.message) || e) }); }
+  });
+  post({ type: 'hp-ready' });
+
+  const td = new TextDecoder();
+  const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) : '');
+  const toPath = (ref, fromDir) => {
+    const r = String(ref || '').trim();
+    if (!r || /^(data:|blob:|#|mailto:|tel:|javascript:)/i.test(r)) return null;
+    let u; try { u = new URL(r, BASE + fromDir); } catch { return null; }
+    if (u.origin !== BASE_ORIGIN) return null;
+    let p; try { p = decodeURIComponent(u.pathname).normalize('NFC').replace(/^\/+/, ''); } catch { return null; }
+    if (p === '' || p.endsWith('/')) p += 'index.html';
+    return p;
+  };
+  const isJs = (path, type) => /\.(m?js)$/i.test(path) || /javascript|ecmascript/i.test(type || '');
+  const isCss = (path, type) => /\.css$/i.test(path) || /text\/css/i.test(type || '');
+
+  function render({ files, entry, known }) {
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    const blobs = new Map();
+    const mk = (p, data, type) => { const u = URL.createObjectURL(new Blob([data], { type })); blobs.set(p, u); return u; };
+    // 1) 普通资源：图片、字体、wasm、json……原样生成本地 blob 地址
+    for (const f of files) if (!isJs(f.path, f.type) && !isCss(f.path, f.type)) mk(f.path, f.bytes, f.type);
+    // 2) JS：把相对的模块路径改写成假来源下的绝对地址，再由 import map 映射到 blob（能处理循环依赖）
+    const SPEC = /(\bimport\s*\(\s*|\bfrom\s*|\bimport\s+)(["'])([^"'\n]+)\2/g;
+    const rewriteJs = (text, fromDir) => String(text).replace(SPEC, (m, pre, q, spec) => { if (!/^(\.{1,2}\/|\/)/.test(spec)) return m; const p = toPath(spec, fromDir); return p ? pre + q + BASE + p + q : m; });
+    for (const f of files) if (isJs(f.path, f.type)) mk(f.path, rewriteJs(td.decode(f.bytes), dirOf(f.path)), 'text/javascript');
+    // 3) CSS：url() 与 @import 改写成 blob（CSS 引用 CSS 递归处理，防环）
+    const cssBusy = new Set();
+    const cssUrl = (p) => {
+      if (blobs.has(p)) return blobs.get(p);
+      const f = byPath.get(p);
+      if (!f || !isCss(f.path, f.type) || cssBusy.has(p)) return null;
+      cssBusy.add(p);
+      return mk(p, rewriteCss(td.decode(f.bytes), dirOf(p)), 'text/css');
+    };
+    function rewriteCss(text, fromDir) {
+      return String(text)
+        .replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/g, (m, q, ref) => { const p = toPath(ref, fromDir); const u = p && (blobs.get(p) || cssUrl(p)); return u ? `url("${u}")` : m; })
+        .replace(/@import\s+(["'])([^"']+)\1/g, (m, q, ref) => { const p = toPath(ref, fromDir); const u = p && cssUrl(p); return u ? `@import "${u}"` : m; });
+    }
+    for (const f of files) if (isCss(f.path, f.type)) cssUrl(f.path);
+
+    // 4) 入口 HTML：改写资源引用，注入 CSP、<base>、import map、运行时垫片
+    const entryFile = byPath.get(entry);
+    const doc = new DOMParser().parseFromString(td.decode(entryFile.bytes), 'text/html');
+    const edir = dirOf(entry);
+    const rw = (el, attr) => { const v = el.getAttribute(attr); if (v == null) return; const p = toPath(v, edir); if (p && blobs.has(p)) el.setAttribute(attr, blobs.get(p)); };
+    doc.querySelectorAll('[src]').forEach((el) => rw(el, 'src'));
+    doc.querySelectorAll('link[href]').forEach((el) => rw(el, 'href'));
+    doc.querySelectorAll('[poster]').forEach((el) => rw(el, 'poster'));
+    doc.querySelectorAll('object[data]').forEach((el) => rw(el, 'data'));
+    doc.querySelectorAll('[srcset]').forEach((el) => el.setAttribute('srcset', el.getAttribute('srcset').split(',').map((s) => {
+      const [u, d] = s.trim().split(/\s+/, 2); const p = toPath(u, edir); return (p && blobs.has(p) ? blobs.get(p) : u) + (d ? ' ' + d : '');
+    }).join(', ')));
+    doc.querySelectorAll('style').forEach((el) => { el.textContent = rewriteCss(el.textContent, edir); });
+    doc.querySelectorAll('[style]').forEach((el) => el.setAttribute('style', rewriteCss(el.getAttribute('style'), edir)));
+    doc.querySelectorAll('base').forEach((el) => el.remove());
+    doc.querySelectorAll('meta[http-equiv]').forEach((el) => { if (/refresh/i.test(el.getAttribute('http-equiv') || '')) el.remove(); });
+
+    // 站点里所有已知路径都进 import map（指向假来源），JS 用到还没加载的模块时由垫片先去要、再动态加载
+    const imports = {};
+    for (const f of files) if (isJs(f.path, f.type)) imports[BASE + f.path] = blobs.get(f.path);
+    window.__hp = { base: BASE, blobs: Object.fromEntries(blobs), known: known || [] };
+    const esc = (s) => s.replace(/</g, '\\u003c');
+    const head = doc.head || doc.documentElement.insertBefore(doc.createElement('head'), doc.body);
+    head.insertAdjacentHTML('afterbegin',
+      `<meta http-equiv="Content-Security-Policy" content="${CSP.replace(/"/g, '&quot;')}">` +
+      `<base href="${BASE + edir}">` +
+      `<script type="importmap">${esc(JSON.stringify({ imports }))}<\/script>` +
+      `<script>(${shim.toString()})();<\/script>`);
+    const html = '<!doctype html>\n' + doc.documentElement.outerHTML;
+    document.open();
+    document.write(html);
+    document.close();
+  }
+
+  // 运行时垫片：在站点任何脚本之前执行。把对假来源的 fetch / XHR / 动态插入的资源改写到 blob；
+  // 没加载过的文件向外壳要（hp-need）；站内链接交给查看器；链外链接交给查看器确认；CSP 拦截上报给查看器。
+  function shim() {
+    const H = window.__hp; const BASE = H.base; const blobs = H.blobs; const ORIGIN = new URL(BASE).origin;
+    const post = (m) => { try { parent.postMessage(m, '*'); } catch {} };
+    const map = (raw) => {
+      try {
+        const u = new URL(String(raw), document.baseURI);
+        if (u.origin !== ORIGIN) return null;
+        let p = decodeURIComponent(u.pathname).normalize('NFC').replace(/^\/+/, '');
+        if (p === '' || p.endsWith('/')) p += 'index.html';
+        return { p, blob: blobs[p] || null, hash: u.hash };
+      } catch { return null; }
+    };
+    // 向外壳要文件：同一路径只请求一次；外壳读链、校验后把字节发回来，这里做成 blob
+    const pending = new Map(); let seq = 0;
+    const need = (p) => {
+      if (blobs[p]) return Promise.resolve(blobs[p]);
+      if (pending.has(p)) return pending.get(p).promise;
+      let resolve; const pr = new Promise((res) => { resolve = res; });
+      const id = ++seq; pending.set(p, { res: resolve, id, promise: pr });
+      post({ type: 'hp-need', id, path: p });
+      return pr;
+    };
+    addEventListener('message', (ev) => {
+      if (ev.source !== parent || !ev.data || ev.data.type !== 'hp-file') return;
+      const m = ev.data; const w = pending.get(m.path); if (!w) return; pending.delete(m.path);
+      if (!m.ok) { blobs[m.path] = null; w.res(null); return; }
+      const url = URL.createObjectURL(new Blob([m.bytes], { type: m.contentType || 'application/octet-stream' }));
+      blobs[m.path] = url; w.res(url);
+    });
+    const ofetch = window.fetch.bind(window);
+    window.fetch = async function (input, init) {
+      const url = typeof input === 'string' || input instanceof URL ? String(input) : input && input.url;
+      const m = map(url);
+      if (!m) return ofetch(input, init);
+      const b = m.blob || (await need(m.p));
+      return b ? ofetch(b, init) : new Response('Not found on chain', { status: 404 });
+    };
+    const oopen = XMLHttpRequest.prototype.open; const osend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) { const m = map(url); this.__hpPath = m && !m.blob ? m.p : null; return oopen.call(this, method, m ? (m.blob || 'data:,') : url, ...rest); };
+    XMLHttpRequest.prototype.send = function (...a) { if (!this.__hpPath) return osend.apply(this, a); const self = this; need(this.__hpPath).then((b) => { if (b) { oopen.call(self, 'GET', b, true); osend.apply(self, a); } else osend.apply(self, a); }); };
+    const ATTRS = ['src', 'href', 'poster', 'data'];
+    const fix = (el) => {
+      if (!(el instanceof Element)) return;
+      for (const a of ATTRS) {
+        if (a === 'href' && el.tagName === 'A') continue;
+        const v = el.getAttribute(a);
+        if (!v || /^(blob:|data:)/i.test(v)) continue;
+        const m = map(v); if (!m) continue;
+        if (m.blob) el.setAttribute(a, m.blob);
+        else if (el.tagName === 'SCRIPT') {
+          el.setAttribute(a, 'data:,');
+          need(m.p).then((b) => { if (!b) return; const s = document.createElement('script'); for (const at of el.attributes) if (at.name !== 'src') s.setAttribute(at.name, at.value); s.src = b; el.replaceWith(s); });
+        } else { el.setAttribute(a, 'data:,'); need(m.p).then((b) => { if (b) el.setAttribute(a, b); }); }
+      }
+    };
+    new MutationObserver((recs) => {
+      for (const r of recs) {
+        if (r.type === 'attributes') fix(r.target);
+        else r.addedNodes.forEach((n) => { fix(n); if (n.querySelectorAll) n.querySelectorAll('[src],[href],[poster],[data]').forEach(fix); });
+      }
+    }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ATTRS });
+    document.addEventListener('click', (e) => {
+      const a = e.target && e.target.closest && e.target.closest('a[href]');
+      if (!a) return;
+      const href = a.getAttribute('href');
+      if (!href) return;
+      e.preventDefault();
+      if (href.startsWith('#')) {
+        const id = decodeURIComponent(href.slice(1));
+        const t = id && (document.getElementById(id) || document.getElementsByName(id)[0]);
+        if (t) t.scrollIntoView();
+        return;
+      }
+      const m = map(href);
+      if (m) post({ type: 'hp-nav', path: m.p });
+      else { try { post({ type: 'hp-external', url: new URL(href, document.baseURI).href }); } catch {} }
+    }, true);
+    // 站内假地址（site.tape.invalid）被拦是正常的：动态插入的资源在被改写成 blob 之前先按假地址发起过一次，
+    // 这种请求永远不会出网，不算「链外资源」，不上报；只上报真正的链外地址。
+    document.addEventListener('securitypolicyviolation', (e) => {
+      let origin = ''; try { origin = new URL(e.blockedURI).origin; } catch {}
+      if (origin !== ORIGIN) post({ type: 'hp-csp', url: e.blockedURI, directive: e.effectiveDirective });
+    });
+    window.addEventListener('load', () => post({ type: 'hp-title', title: document.title }));
+  }
+})();
+</script>
+</body>
+</html>

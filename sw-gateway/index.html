@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- tape:// 网关引导页。服务器对每个子域名、每条路径都返回这同一个文件（除了 /sw.js 和 /.tape/ 下的静态资源）。
+     它只做一件事：装上 Service Worker，然后刷新；之后这个来源下的所有请求都由 Service Worker 直接从链上读。
+     在网关根域名（没有网站段）上，它是首页：输入链上名字就跳到对应子域名。没有任何外部资源。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'">
+<title>tape://</title>
+<style>
+:root{color-scheme:light dark}body{margin:0;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Noto Sans CJK SC",sans-serif;background:#f6f7f9;color:#1b1f24}
+@media(prefers-color-scheme:dark){body{background:#0f1115;color:#e6e8eb}.card{background:#171a20;border-color:#2a2f38}input{background:#0f1115;color:#e6e8eb;border-color:#2a2f38}}
+main{max-width:720px;margin:0 auto;padding:40px 20px}h1{font-size:24px;margin:0 0 8px}p{margin:8px 0}.hint{opacity:.7;font-size:13px}
+.card{background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:18px 20px;margin:16px 0}form{display:flex;gap:8px}input{flex:1;font:inherit;padding:9px 12px;border:1px solid #cfd4da;border-radius:7px}
+button{font:inherit;padding:9px 16px;border-radius:7px;border:1px solid #1b1f24;background:#1b1f24;color:#fff;cursor:pointer}button.plain{background:transparent;color:inherit;border-color:#cfd4da}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.err{color:#b42318}.spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:s 1s linear infinite;vertical-align:-2px;margin-right:8px}@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<main id="main"><p><span class="spin"></span><span id="msg">…</span></p></main>
+<script src="/.tape/boot.js" type="module"></script>
+</body>
+</html>

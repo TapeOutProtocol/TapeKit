@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://bsc-dataseed.bnbchain.org https://bsc-rpc.publicnode.com https://bsc-dataseed1.defibit.io https://bsc-dataseed1.ninicoin.io; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>链上网站查看器 · tape://</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand" id="brand">tape://</div>
+  <form id="go" class="address" autocomplete="off">
+    <input id="addr" spellcheck="false" aria-label="tape://">
+    <button type="submit" id="goBtn">打开</button>
+  </form>
+  <button type="button" id="langBtn" class="lang">English</button>
+</header>
+
+<section id="identity" class="identity" hidden>
+  <div class="id-main">
+    <div class="id-name"><span id="idName"></span><span id="idTitle" class="id-title"></span></div>
+    <div class="id-sub" id="idSub"></div>
+  </div>
+  <ul class="badges" id="badges"></ul>
+  <details class="id-more">
+    <summary id="detailsSummary">详情</summary>
+    <dl id="idDetails"></dl>
+  </details>
+</section>
+
+<main id="stage" class="stage">
+  <div id="message" class="message"></div>
+</main>
+
+<footer class="foot">
+  <span id="net"></span>
+  <a href="../SPEC.md" id="specLink" target="_blank" rel="noopener noreferrer">规范</a>
+</footer>
+
+<script type="module" src="viewer.js"></script>
+</body>
+</html>
