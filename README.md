@@ -2,6 +2,8 @@
 
 **The open-source browser kernel for the TapeOut protocol.** Websites are stored byte-for-byte on BNB Chain; Tapekit reads them straight from the chain, verifies every byte, and opens them in the browser. No domain name, no DNS, no server.
 
+**Try it now / 现在就试**: open **https://4246-0.tapekit.org/** in any browser. That page is `4246.0.tape`, read straight from BNB Chain by a Service Worker in your browser and verified byte by byte; its status page is at **https://4246-0.tapekit.org/.tape/status**. The gateway home is https://tapekit.org/ .
+
 [中文](#中文) · [English](#english) · [한국어](#한국어) · [Documentation index / 文档索引](#documentation-index--文档索引)
 
 ---
@@ -214,7 +216,7 @@ const file = await site.get('index.html');           // bytes verified against t
 
 | Where | What to type | Requires |
 |---|---|---|
-| Any browser, via a gateway | `https://4246-0.<gateway domain>/` | nothing installed; the gateway serves only a bootstrap page |
+| Any browser, via a gateway | `https://4246-0.tapekit.org/` (official gateway) or `https://4246-0.<your gateway>/` | nothing installed; the gateway serves only a bootstrap page |
 | Chrome address bar, site-search shortcut | `tape` ⇥ `4246.0.tape` (shortcut URL `https://<gateway domain>/?open=%s`) | one-time setting in `chrome://settings/searchEngines` |
 | Chrome address bar, extension | `tape` ␣ `4246.0.tape` | the extension |
 | Links on web pages | `web+tape://4246.0.tape/` | one-time "allow this site to handle web+tape links" on the gateway home page |
@@ -234,7 +236,7 @@ BNB Smart Chain, chainId 56. Full list and pinned implementations in [SPEC.md §
 
 ### Status and roadmap / 状态与路线
 
-- 2026-09-13: specification v0.2; kernel, viewer, extension and Service Worker gateway reference implementations; unit 22/22, mainnet read-only 9/9, gateway end-to-end 25/25. **Not yet independently audited; no official gateway deployed yet.**
+- 2026-09-13: specification v0.2; kernel, viewer, extension and Service Worker gateway reference implementations; unit 22/22, mainnet read-only 9/9, gateway end-to-end 25/25. Official gateway live at **tapekit.org** (Cloudflare Workers static assets, wildcard route). **Not yet independently audited.**
 - Next: independent audit of the kernel and gateway; gateway domain and Public Suffix List; `@tapekit/kernel` on npm; site-owner handbook (publishing, activation, "100% on-chain" rules); kernel API reference and `.d.ts` types; open-source contract sources and the publishing CLI; desktop app registering `tape://`; `web3://` (ERC-4804 / ERC-6860) read-only adapter.
 
 ### Naming / 命名
