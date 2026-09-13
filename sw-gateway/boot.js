@@ -53,7 +53,7 @@ function landing() {
 <p>${t('输入链上名字，网站会在它自己的子域名下打开。之后所有文件都由你浏览器里的 Service Worker 直接从链上读取并校验，这台服务器不经手任何内容。', 'Enter an on-chain name; the site opens under its own subdomain. From then on every file is read and verified straight from the chain by a Service Worker in your browser; this server never touches the content.')}</p>
 <div class="card"><form id="go"><input id="addr" class="mono" autofocus placeholder="4246.0.tape / #4246@0 / 0x…" spellcheck="false"><button type="submit">${t('打开', 'Open')}</button></form>
 <p class="hint" id="err"></p></div>
-<div class="card"><p>${t('让浏览器把 <span class="mono">web+tape://</span> 链接交给这个网关打开：', 'Let the browser open <span class="mono">web+tape://</span> links with this gateway:')} <button class="plain" id="reg">${t('注册', 'Register')}</button> <span class="hint" id="regMsg"></span></p></div>
+<div class="card"><div class="row"><span>${t('让浏览器把 <span class="mono">web+tape://</span> 链接交给这个网关打开', 'Let the browser open <span class="mono">web+tape://</span> links with this gateway')}</span> <button class="plain" id="reg">${t('注册', 'Register')}</button></div><p class="hint" id="regMsg" style="margin:10px 0 0"></p></div>
 <p class="hint">${t('每个网站都在独立的来源下运行（可以保存数据、可以用你的钱包扩展）。文件与链上 SHA-256 逐个核对，至少两家节点运营方结果一致才采用。链外请求默认拦截，可在每个网站的 /.tape/status 查看和放行。', 'Each site runs in its own origin (it can store data and use your wallet extension). Every file is checked against its on-chain SHA-256, and at least two independent node operators must agree. Off-chain requests are blocked by default; see and allow them at each site\'s /.tape/status.')}</p>`;
   $('go').addEventListener('submit', (e) => {
     e.preventDefault();
