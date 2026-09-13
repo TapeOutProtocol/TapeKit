@@ -20,7 +20,7 @@ const copyDir = (from, to, filter = () => true) => {
 copyDir(path.join(root, 'extension'), out);
 copyDir(path.join(root, 'kernel', 'src'), path.join(out, 'kernel', 'src'), (n) => n.endsWith('.js'));
 for (const f of ['index.html', 'viewer.js', 'viewer.css', 'frame.html', 'blocklist.txt']) copy(path.join(root, 'viewer', f), path.join(out, 'viewer', f));
-copy(path.join(root, 'SPEC.md'), path.join(out, 'SPEC.md'));
+for (const f of ['SPEC.md', 'SPEC.zh.md']) copy(path.join(root, f), path.join(out, f));
 
 // 自检：manifest 合法、引用的文件都在包里、没有指向包外的相对导入
 const manifest = JSON.parse(fs.readFileSync(path.join(out, 'manifest.json'), 'utf8'));

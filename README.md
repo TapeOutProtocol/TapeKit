@@ -1,6 +1,25 @@
 # Tapekit
 
-[中文](#中文) · [English](#english) · [한국어](#한국어)
+**The open-source browser kernel for the TapeOut protocol.** Websites are stored byte-for-byte on BNB Chain; Tapekit reads them straight from the chain, verifies every byte, and opens them in the browser. No domain name, no DNS, no server.
+
+[中文](#中文) · [English](#english) · [한국어](#한국어) · [Documentation index / 文档索引](#documentation-index--文档索引)
+
+---
+
+## Contents / 目录
+
+- [中文](#中文) — 正文（含展望）
+- [English](#english) — the same text in English
+- [한국어](#한국어) — 한국어 번역
+- [Documentation index / 文档索引](#documentation-index--文档索引)
+  - [Specification / 规范](#specification--规范)
+  - [Repository map / 仓库结构](#repository-map--仓库结构)
+  - [Quick start / 快速开始](#quick-start--快速开始)
+  - [Ways to open an on-chain site / 打开链上网站的几种方式](#ways-to-open-an-on-chain-site--打开链上网站的几种方式)
+  - [Mainnet constants / 主网常量](#mainnet-constants--主网常量)
+  - [Status and roadmap / 状态与路线](#status-and-roadmap--状态与路线)
+  - [Naming / 命名](#naming--命名)
+  - [License / 许可](#license--许可)
 
 ---
 
@@ -100,3 +119,108 @@ TapeOut에서는 회로 NFT 하나가 온체인 컨테이너 하나에 묶이고
 앞으로 나아갈 방향은 하나뿐입니다: 모든 것을 체인 위에 올리는 것. 프런트엔드도 체인에, 로직도 체인에 (TapeOut의 회로 자체가 체인 위에서 실행되는 프로그램입니다), 상태도 체인에. 그 단계에 이르면, 하나의 애플리케이션은 화면에서 백엔드까지 어느 한 고리도 체인 밖에 있지 않으며, 따라서 어느 한 고리도 꺼지거나, 바뀌거나, 가로막힐 수 없습니다.
 
 명세는 CC0로 권리를 포기하고, 코드는 MIT로 오픈소스입니다. 누구나 자신의 게이트웨이를 세우고, 자신의 커널 구현을 쓰고, 자신의 브라우저를 만들 수 있습니다. 우리가 쓴 이 구현은 참고용일 뿐입니다.
+
+
+---
+
+## Documentation index / 文档索引
+
+### Specification / 规范
+
+| Document | Language | What it is |
+|---|---|---|
+| [SPEC.md](SPEC.md) | English (normative / 正本) | tape:// On-Chain Website Specification v0.2: URL format, resolution, verification, node agreement, site isolation, Service Worker gateway requirements, blocking, caching, security, test vectors, **change rules (§15)**, shell compliance checklist (Appendix A), **contract interfaces (Appendix B)** |
+| [SPEC.zh.md](SPEC.zh.md) | 中文 | 同一份规范的中文版，逐节对应；有出入以英文版为准 |
+
+Section guide / 章节导读:
+
+| § | Topic / 主题 |
+|---|---|
+| 1 | Terms: processor, processor number, #ID, container, site store, kernel, shell / 名词 |
+| 2 | On-chain names `<#ID>.<processor>.tape`, URLs `tape://…`, the `web+tape://` alias, accepted input forms / 名字、网址、别名、输入写法 |
+| 3 | Resolution: name → container, container → name, activation (payment) check, status codes / 解析与状态码 |
+| 4 | Nodes: multi-operator agreement, pinned block, pinned store implementations / 节点、钉块、钉实现 |
+| 5–6 | Reading, SHA-256 verification, path rules / 读取、校验、路径 |
+| 7 | Site isolation: real origin, opaque origin, Service Worker gateway (§7.8), wallets, network, navigation, identity / 隔离要求 |
+| 8–10 | "100% on-chain" badge, blocklist and reporting, caching and updates / 纯链上标记、屏蔽、缓存 |
+| 11–12 | Security considerations, relationship to `web3://` and the BEP draft / 安全、与其他规范的关系 |
+| 13–14 | Reference implementations, test vectors / 参考实现、测试向量 |
+| 15 | Change rules: what never changes, what changes and how, versioning, who maintains / 变更规则 |
+| A | Shell compliance checklist / 外壳合规清单 |
+| B | Contract interfaces: factory, opener, processor, container, SiteRegistry, DomainBinding, pinned implementation list / 合约接口 |
+
+### Repository map / 仓库结构
+
+| Path | Component | Notes |
+|---|---|---|
+| [`kernel/`](kernel/) | **Kernel** `@tapekit/kernel` | Zero-dependency ES module for browsers and Node ≥ 18. Name resolution, multi-node agreement, pinned block, pinned implementations, per-file SHA-256 verification, persistent cache (memory / directory / IndexedDB), on-demand reads, update watching, bilingual messages. Tests: `kernel/test/unit.test.mjs` (offline), `kernel/test/mainnet.test.mjs` (mainnet read-only) |
+| [`sw-gateway/`](sw-gateway/) | **Service Worker gateway** | Lets ordinary Chrome / Edge / Firefox / Safari open on-chain sites with nothing installed, one real origin per site. Bootstrap page, Service Worker, script-free status pages, operator config, deployment rules, end-to-end test in real headless Chrome. See [sw-gateway/README.md](sw-gateway/README.md) |
+| [`extension/`](extension/) | **Browser extension** (Chrome MV3) | Address-bar keyword `tape`; verifies that the current https page matches the on-chain bytes; optional gateway domain setting. Build with `node build-extension.mjs` → `dist/extension/` |
+| [`viewer/`](viewer/) | **Web viewer** (preview mode) | Sandboxed-iframe shell with an opaque origin and strict CSP; the fallback when there is no extension and no gateway |
+| [`GUIDE.md`](GUIDE.md) | 技术说明 (Chinese) | How to run, test, build and deploy each component; known limitations; next steps |
+| [`test/`](test/) | Render fixture | Headless-Chrome regression fixture for the preview renderer |
+| `dev-server.mjs` | Viewer dev server | `http://127.0.0.1:8095/viewer/` |
+| `build-extension.mjs` | Extension build | Assembles `dist/extension/` and checks that no import leaves the package |
+| [`LICENSE`](LICENSE) / [`LICENSE-SPEC`](LICENSE-SPEC) | Licenses | MIT for code; CC0 for the specification text |
+
+### Quick start / 快速开始
+
+```bash
+npm install            # only dev dependencies (ethers, used by the unit tests as a second implementation)
+npm test               # kernel unit tests, offline
+npm run test:mainnet   # kernel mainnet read-only tests (no keys, no transactions)
+npm run dev:gateway    # Service Worker gateway on http://localhost:8096  → try http://4246-0.localhost:8096/
+npm run test:e2e       # gateway end-to-end test in real headless Chrome (needs Google Chrome installed)
+npm run dev:viewer     # preview-mode viewer on http://127.0.0.1:8095/viewer/
+npm run build:extension
+```
+
+Using the kernel from your own code / 在自己的代码里用内核:
+
+```js
+import { createKernel } from './kernel/src/index.js';
+const kernel = createKernel();                       // defaults: 4 public nodes, 2 must agree
+const res = await kernel.resolve('4246.0.tape');     // res.status === 'ok' | 'unpaid' | …
+const site = await kernel.openSite(res);             // manifest only
+const file = await site.get('index.html');           // bytes verified against the on-chain SHA-256
+```
+
+### Ways to open an on-chain site / 打开链上网站的几种方式
+
+| Where | What to type | Requires |
+|---|---|---|
+| Any browser, via a gateway | `https://4246-0.<gateway domain>/` | nothing installed; the gateway serves only a bootstrap page |
+| Chrome address bar, site-search shortcut | `tape` ⇥ `4246.0.tape` (shortcut URL `https://<gateway domain>/?open=%s`) | one-time setting in `chrome://settings/searchEngines` |
+| Chrome address bar, extension | `tape` ␣ `4246.0.tape` | the extension |
+| Links on web pages | `web+tape://4246.0.tape/` | one-time "allow this site to handle web+tape links" on the gateway home page |
+| Desktop app (planned) | `tape://4246.0.tape/` | the app registers the scheme with the OS |
+
+### Mainnet constants / 主网常量
+
+BNB Smart Chain, chainId 56. Full list and pinned implementations in [SPEC.md §3.1 and §4.3](SPEC.md#31-mainnet-constants).
+
+| Contract | Address |
+|---|---|
+| Processor factory | `0x68224F668083c29e9800Be2a646d42d18cedF7e2` |
+| Container opener | `0x021745DE2f42A7839d96f2d3634d0294487D81F1` |
+| SiteRegistry (proxy) | `0xd006ffdd5Ae313B17729621A00999cD3C71CE5e6` |
+| DomainBinding (proxy) | `0x861EE183de2BBE4a6ecf9D15812C123b566a3DB7` |
+| Sample site | `4246.0.tape` = container `0x86DDaEF00401E3F10418398D67D7189fc458eA95` |
+
+### Status and roadmap / 状态与路线
+
+- 2026-09-13: specification v0.2; kernel, viewer, extension and Service Worker gateway reference implementations; unit 22/22, mainnet read-only 9/9, gateway end-to-end 25/25. **Not yet independently audited; no official gateway deployed yet.**
+- Next: independent audit of the kernel and gateway; gateway domain and Public Suffix List; `@tapekit/kernel` on npm; site-owner handbook (publishing, activation, "100% on-chain" rules); kernel API reference and `.d.ts` types; open-source contract sources and the publishing CLI; desktop app registering `tape://`; `web3://` (ERC-4804 / ERC-6860) read-only adapter.
+
+### Naming / 命名
+
+| Layer | Name | Scope |
+|---|---|---|
+| Protocol | TapeOut | transistors, processors, circuit containers: the on-chain layer |
+| URL and specification | `tape://` | what users type in the address bar; the specification is "the tape:// specification" |
+| Open-source tools | Tapekit | everything that reads `tape://`: kernel, gateway, extension, CLI, the future desktop app |
+| Commercial service | HashPort | the hosted console, domain binding and fees run by the HashPort team |
+
+### License / 许可
+
+Code: [MIT](LICENSE). Specification text: [CC0](LICENSE-SPEC). Anyone may run their own gateway, write their own kernel, build their own browser.
