@@ -12,7 +12,8 @@
     "dev:viewer": "node dev-server.mjs",
     "dev:gateway": "node sw-gateway/dev-server.mjs",
     "test:types": "tsc -p kernel/test/types/tsconfig.json",
-    "build:gateway": "node sw-gateway/build.mjs"
+    "build:gateway": "node sw-gateway/build.mjs",
+    "block": "node sw-gateway/block.mjs"
   },
   "devDependencies": {
     "ethers": "^6.13.0",

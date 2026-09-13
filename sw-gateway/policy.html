@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'">
+<title>Tapekit 网关 · 屏蔽规则与举报 / Blocking policy &amp; reporting</title>
+<style>
+:root{color-scheme:light}html{background:#fff}body{margin:0;background:#fff;color:#0f1419;font:19px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:760px;margin:0 auto;padding:72px 28px 120px}h1{font-size:34px;line-height:1.2;font-weight:800;letter-spacing:-.02em;margin:0 0 16px}h2{font-size:22px;margin:40px 0 10px}p,li{margin:0 0 14px}ol,ul{padding-left:24px}.hint{color:#536471;font-size:16px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.95em}hr{border:0;border-top:1px solid #eff3f4;margin:56px 0}a{color:#1d9bf0}
+</style>
+</head>
+<body><main>
+<h1>屏蔽规则与举报</h1>
+<p>这个网关只做一件事：把存在 BNB 链上的网站读出来交给你的浏览器。内容不在这台服务器上，我们删不掉链上的任何东西；但网关是展示方，可以拒绝显示。</p>
+<h2>会被屏蔽的内容</h2>
+<ul>
+<li>儿童性剥削材料；</li>
+<li>恶意软件、钓鱼、伪装成他人（含伪装成钱包或交易所）的页面；</li>
+<li>收到有效通知的侵权内容；</li>
+<li>网关所在司法辖区法律明确禁止的其它内容。</li>
+</ul>
+<h2>怎么举报</h2>
+<p>发邮件到 <span class="mono">codongorg@gmail.com</span>，标题写 <span class="mono">[tapekit abuse]</span>，正文写：网站的链上名字（例如 <span class="mono">4246.0.tape</span>）或子域名、问题是什么、你是谁（版权投诉需要权利证明）。</p>
+<h2>处理时限与方式</h2>
+<ol>
+<li>收到后 24 小时内回复确认；</li>
+<li>核实属实的，48 小时内加入屏蔽名单。名单是公开的静态文件 <a href="/.tape/blocklist.txt">/.tape/blocklist.txt</a>，屏蔽按链上名字或容器地址，全网 10 分钟内生效；</li>
+<li>被屏蔽的网站打开时显示「此客户端已屏蔽这个网站」，不显示任何内容；</li>
+<li>站长认为屏蔽有误，用同一个邮箱申诉，标题写 <span class="mono">[tapekit appeal]</span>。</li>
+</ol>
+<p class="hint">屏蔽只对这个网关有效。链上数据不会被改动，其它网关和客户端不受影响；网关代码开源，任何人都可以架自己的网关并制定自己的规则。</p>
+<hr>
+<h1>Blocking policy &amp; reporting</h1>
+<p>This gateway does one thing: it reads websites stored on BNB Chain and hands them to your browser. The content is not on this server and we cannot delete anything on chain; but the gateway is the party doing the displaying, and it can refuse to display.</p>
+<h2>What gets blocked</h2>
+<ul>
+<li>Child sexual abuse material;</li>
+<li>Malware, phishing, and pages impersonating others (including wallets and exchanges);</li>
+<li>Infringing content after a valid notice;</li>
+<li>Other content clearly prohibited by the law of the jurisdiction the gateway operates in.</li>
+</ul>
+<h2>How to report</h2>
+<p>Email <span class="mono">codongorg@gmail.com</span> with the subject <span class="mono">[tapekit abuse]</span>. Include the site's on-chain name (for example <span class="mono">4246.0.tape</span>) or subdomain, what the problem is, and who you are (copyright complaints need proof of rights).</p>
+<h2>Timeline and method</h2>
+<ol>
+<li>Acknowledgement within 24 hours;</li>
+<li>Confirmed reports are added to the blocklist within 48 hours. The list is a public static file, <a href="/.tape/blocklist.txt">/.tape/blocklist.txt</a>, keyed by on-chain name or container address, effective everywhere within 10 minutes;</li>
+<li>A blocked site shows "this client has blocked this site" and no content;</li>
+<li>Site owners who believe a block is wrong can appeal at the same address with the subject <span class="mono">[tapekit appeal]</span>.</li>
+</ol>
+<p class="hint">Blocking affects this gateway only. On-chain data is untouched and other gateways and clients are unaffected; the gateway is open source, and anyone can run their own with their own rules.</p>
+</main></body>
+</html>

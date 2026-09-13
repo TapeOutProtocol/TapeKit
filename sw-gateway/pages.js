@@ -137,6 +137,6 @@ export function messagePage({ locale, kind, res, host, vars = {}, statusTextOf }
     case 'blocked-request': title = t('blockedReq'); break;
     default: title = kind;
   }
-  const body = `<h1>${esc(title)}</h1>${html}${st ? identityCard(t, locale, st) : ''}<p class="hint">${t('statusLink')} <a href="/.tape/status">/.tape/status</a></p>`;
+  const body = `<h1>${esc(title)}</h1>${html}${st ? identityCard(t, locale, st) : ''}<p class="hint">${t('statusLink')} <a href="/.tape/status">/.tape/status</a> · <a href="/.tape/policy.html">${t('report')}</a></p>`;
   return shell(locale, title, body);
 }

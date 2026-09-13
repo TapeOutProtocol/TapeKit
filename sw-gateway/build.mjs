@@ -8,7 +8,7 @@ const out = path.resolve(here, '..', 'dist', 'gateway');
 fs.rmSync(out, { recursive: true, force: true });
 const put = (from, to) => { fs.mkdirSync(path.dirname(path.join(out, to)), { recursive: true }); fs.copyFileSync(path.join(here, from), path.join(out, to)); };
 put('index.html', 'index.html'); put('sw.js', 'sw.js');
-for (const f of ['boot.js', 'pages.js', 'config.json', 'blocklist.txt']) put(f, path.join('.tape', f));
+for (const f of ['boot.js', 'pages.js', 'policy.html', 'config.json', 'blocklist.txt']) put(f, path.join('.tape', f));
 const k = path.resolve(here, '..', 'kernel', 'src');
 for (const f of fs.readdirSync(k)) if (f.endsWith('.js')) { fs.mkdirSync(path.join(out, '.tape', 'kernel'), { recursive: true }); fs.copyFileSync(path.join(k, f), path.join(out, '.tape', 'kernel', f)); }
 // 自检：sw.js 与 boot.js 引用的都在

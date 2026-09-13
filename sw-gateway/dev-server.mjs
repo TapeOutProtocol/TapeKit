@@ -11,7 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const kernelDir = path.resolve(here, '../kernel/src');
 const port = Number(process.env.PORT || 8096);
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.txt': 'text/plain; charset=utf-8' };
-const STATIC = { '/sw.js': 'sw.js', '/.tape/boot.js': 'boot.js', '/.tape/pages.js': 'pages.js', '/.tape/config.json': 'config.json', '/.tape/blocklist.txt': 'blocklist.txt' };
+const STATIC = { '/sw.js': 'sw.js', '/.tape/boot.js': 'boot.js', '/.tape/pages.js': 'pages.js', '/.tape/config.json': 'config.json', '/.tape/policy.html': 'policy.html', '/.tape/blocklist.txt': 'blocklist.txt' };
 
 export function mapPath(p) {
   if (STATIC[p]) return path.join(here, STATIC[p]);

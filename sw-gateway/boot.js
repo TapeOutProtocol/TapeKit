@@ -56,7 +56,7 @@ function landing() {
 <div class="card"><form id="go"><input id="addr" class="mono" autofocus placeholder="4246.0.tape / #4246@0 / 0x…" spellcheck="false"><button type="submit">${t('打开', 'Open')}</button></form>
 <p class="hint" id="err"></p></div>
 <div class="card"><div class="row"><span>${t('让浏览器把 <span class="mono">web+tape://</span> 链接交给这个网关打开', 'Let the browser open <span class="mono">web+tape://</span> links with this gateway')}</span> <button class="plain" id="reg">${t('注册', 'Register')}</button></div><p class="hint" id="regMsg" style="margin:10px 0 0"></p></div>
-<p class="hint">${t('每个网站都在独立的来源下运行（可以保存数据、可以用你的钱包扩展）。文件与链上 SHA-256 逐个核对，至少两家节点运营方结果一致才采用。链外请求默认拦截，可在每个网站的 /.tape/status 查看和放行。', 'Each site runs in its own origin (it can store data and use your wallet extension). Every file is checked against its on-chain SHA-256, and at least two independent node operators must agree. Off-chain requests are blocked by default; see and allow them at each site\'s /.tape/status.')}</p>`;
+<p class="hint">${t('每个文件都从链上读、和链上指纹核对，改过就不显示。网站不在这台服务器上，在链上。钱包可以直接用。', 'Every file is read from the chain and checked against its on-chain fingerprint; anything altered is not shown. The website is not on this server, it is on the chain. Your wallet works directly.')} <a href="/.tape/policy.html">${t('屏蔽规则与举报', 'Blocking policy & reporting')}</a></p>`;
   $('go').addEventListener('submit', (e) => {
     e.preventDefault();
     const target = toSiteUrl($('addr').value);

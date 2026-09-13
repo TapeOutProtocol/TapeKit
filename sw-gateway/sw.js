@@ -12,7 +12,7 @@ import { statusPage, messagePage, pickLocale, tr } from './.tape/pages.js';
 
 const VERSION = '0.1.0';
 const LABEL = /^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$/;           // 子域名第一段：#ID-处理器编号
-const NETWORK_PATHS = /^\/(sw\.js$|\.tape\/(kernel\/|boot\.js$|pages\.js$|blocklist\.txt$|config\.json$))/;   // 这些从服务器取，其余都走链
+const NETWORK_PATHS = /^\/(sw\.js$|\.tape\/(kernel\/|boot\.js$|pages\.js$|policy\.html$|blocklist\.txt$|config\.json$))/;   // 这些从服务器取，其余都走链
 const SETTINGS_KEY = 'gw-settings:v1';
 const MAX_LOG = 200;
 
