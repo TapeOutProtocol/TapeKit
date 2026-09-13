@@ -10,10 +10,14 @@
     "test:e2e": "cd sw-gateway && node test/e2e.mjs",
     "build:extension": "node build-extension.mjs",
     "dev:viewer": "node dev-server.mjs",
-    "dev:gateway": "node sw-gateway/dev-server.mjs"
+    "dev:gateway": "node sw-gateway/dev-server.mjs",
+    "test:types": "tsc -p kernel/test/types/tsconfig.json"
   },
   "devDependencies": {
-    "ethers": "^6.13.0"
+    "ethers": "^6.13.0",
+    "typescript": "^5.6.0"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }

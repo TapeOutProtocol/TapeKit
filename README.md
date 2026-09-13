@@ -20,6 +20,31 @@
   - [Status and roadmap / 状态与路线](#status-and-roadmap--状态与路线)
   - [Naming / 命名](#naming--命名)
   - [License / 许可](#license--许可)
+- [Site owner handbook / 站长手册](#site-owner-handbook--站长手册)
+  - [1. What a site is on chain / 网站在链上是什么](#1-what-a-site-is-on-chain--网站在链上是什么)
+  - [2. Prepare the folder / 准备文件夹](#2-prepare-the-folder--准备文件夹)
+  - [3. Publish / 发布](#3-publish--发布)
+  - [4. Fallback path for single-page apps / 单页应用的回退路径](#4-fallback-path-for-single-page-apps--单页应用的回退路径)
+  - [5. Content types / 内容类型](#5-content-types--内容类型)
+  - [6. Limits / 上限](#6-limits--上限)
+  - [7. Being 100% on-chain / 做到 100% 链上](#7-being-100-on-chain--做到-100-链上)
+  - [8. Activate the name / 开通名字](#8-activate-the-name--开通名字)
+  - [9. Test before you pay / 付费前自测](#9-test-before-you-pay--付费前自测)
+  - [10. Verify your own site / 核对自己的站](#10-verify-your-own-site--核对自己的站)
+  - [11. Update, transfer, take down / 更新、转让、下线](#11-update-transfer-take-down--更新转让下线)
+- [Kernel API reference / 内核 API 参考](#kernel-api-reference--内核-api-参考)
+  - [Install and import / 安装与引入](#install-and-import--安装与引入)
+  - [createKernel(options)](#createkerneloptions)
+  - [kernel.resolve(input, opts)](#kernelresolveinput-opts)
+  - [kernel.openSite(res) → site](#kernelopensiteres--site)
+  - [site.get(path) / site.prefetch(paths) / site.info(path)](#sitegetpath--siteprefetchpaths--siteinfopath)
+  - [kernel.loadSite(res, opts)](#kernelloadsiteres-opts)
+  - [kernel.watch(site, onChange, opts)](#kernelwatchsite-onchange-opts)
+  - [Caches / 缓存](#caches--缓存)
+  - [RPC client / 节点客户端](#rpc-client--节点客户端)
+  - [Errors and bilingual messages / 错误码与双语文案](#errors-and-bilingual-messages--错误码与双语文案)
+  - [Helpers / 工具函数](#helpers--工具函数)
+  - [Types / 类型](#types--类型)
 
 ---
 
@@ -224,3 +249,276 @@ BNB Smart Chain, chainId 56. Full list and pinned implementations in [SPEC.md §
 ### License / 许可
 
 Code: [MIT](LICENSE). Specification text: [CC0](LICENSE-SPEC). Anyone may run their own gateway, write their own kernel, build their own browser.
+
+
+---
+
+## Site owner handbook / 站长手册
+
+For people who want to put a website on chain. English first; 中文摘要在每节末尾。
+
+### 1. What a site is on chain / 网站在链上是什么
+
+A site belongs to a **container**: the ERC-6551 account of one TapeOut circuit NFT. Whoever holds the NFT controls the site. The files live in the `SiteRegistry` contract under (container, path); every file records its size, content type, and the SHA-256 you declare. Readers verify every byte against that hash, so what you publish is exactly what everyone sees.
+
+You need, in this order: a TapeOut circuit (an NFT on some processor), its container **opened** (through the container opener; the HashPort console does this for you), and then files written under it.
+
+> 中文：网站挂在一枚 TapeOut 电路 NFT 的容器名下，谁持有 NFT 谁控制网站。文件存在 SiteRegistry 合约里，每个文件带大小、内容类型和你声明的 SHA-256。前提：有电路、容器已开通。
+
+### 2. Prepare the folder / 准备文件夹
+
+- Build your site as a plain static folder: `index.html` at the root, assets in subfolders. No server-side code.
+- **Use relative paths** (`./app.js`, `assets/logo.png`, `../style.css`) or root-relative paths (`/app.js`). Never absolute `https://` URLs to your own files.
+- **File names must be Unicode NFC.** macOS stores names as NFD; browsers request NFC. Check with `python3 -c "import unicodedata,sys;print(unicodedata.is_normalized('NFC',sys.argv[1]))" 文件名`, or simply use ASCII names.
+- Path rules (SPEC §6): no `.` or `..` segments, no control characters, `/` separators. `index.html` is the directory index: `docs/` lands on `docs/index.html`.
+- Compute the SHA-256 of every file as it is on disk; that is the hash you declare.
+
+```bash
+find dist -type f -exec shasum -a 256 {} \;
+```
+
+> 中文：纯静态文件夹，根目录放 `index.html`；引用一律相对路径；文件名必须是 NFC（macOS 默认 NFD，最稳妥是只用英文名）；路径不能含 `.`/`..` 段；每个文件先算好 SHA-256。
+
+### 3. Publish / 发布
+
+Two ways. The hosted console does everything below for you; the contract calls are what any tool ultimately does.
+
+**A. HashPort console** (hosted, wallet-signed): open the console, pick the circuit, upload the folder, sign the transactions. It computes hashes, splits chunks, sets the fallback path.
+
+**B. Direct contract calls** (SPEC Appendix B.5) — any wallet or script, signed by the holder or an operator authorised with `setOperator`:
+
+1. For each file, `putFile(container, path, contentType, sha256Hash, firstChunk)` with the first ≤ 24,000 bytes. If the file already exists, this **replaces** it.
+2. For the rest of a larger file, `appendChunk(container, path, expectIndex, chunk)` per 24,000-byte chunk, `expectIndex` = 1, 2, 3 … (the contract rejects a wrong index, so a retried transaction cannot append twice).
+3. Optionally `setFallback(container, path)` (section 4).
+4. Remove a file with `removeFile(container, path)`.
+
+Each chunk is deployed as a small contract, so the cost is roughly proportional to bytes (the EVM charges 200 gas per byte of deployed code plus overhead). Minify and compress images before publishing; do not publish source maps or `node_modules`.
+
+An open-source publishing CLI is on the roadmap; until then use the console or your own script against Appendix B.
+
+> 中文：两条路：HashPort 控制台（选电路、传文件夹、签名，哈希和分块它自动做）；或直接调合约：`putFile` 写第一块（≤ 24,000 字节，已存在则整体替换），`appendChunk` 逐块追加（`expectIndex` 防重复），`setFallback` 设回退，`removeFile` 删除。每块是一个小合约，费用按字节算，发布前先压缩。
+
+### 4. Fallback path for single-page apps / 单页应用的回退路径
+
+If your app uses client-side routing (`/dashboard`, `/user/42`), set `fallbackPath` to `index.html`. A request for a path that does not exist **and has no file extension** then lands on `index.html` (SPEC §6 step 4.3). Requests with an extension (`/missing.png`) still 404, so broken assets stay visible.
+
+Client-side routing works under a **real origin** (Service Worker gateway, desktop app). In the **preview viewer** (sandboxed iframe) only the home page is rendered; routes that the script builds with the History API cannot be followed there.
+
+> 中文：前端路由把 `fallbackPath` 设成 `index.html`：无扩展名的未知路径落回首页，带扩展名的仍然 404。前端路由在网关和桌面版可用，在预览查看器里只能显示首页。
+
+### 5. Content types / 内容类型
+
+Declare the real MIME type per file: `text/html; charset=utf-8`, `text/css`, `text/javascript`, `application/json`, `image/png`, `image/svg+xml`, `font/woff2`, `application/wasm` … Only letters, digits, `. + / ; = -` and spaces are accepted; anything else is served as `application/octet-stream` (SPEC §5.6), which browsers will not execute or render. Always include a type for HTML, CSS and JavaScript: without it the browser cannot run your site.
+
+> 中文：每个文件填真实 MIME 类型；只放行常规字符，不合规一律当二进制。HTML、CSS、JS 一定要填对，否则浏览器不执行。
+
+### 6. Limits / 上限
+
+| Limit | Value | Where |
+|---|---|---|
+| Chunk size | 24,000 bytes | contract constant `CHUNK_MAX` |
+| Single file | 350 chunks = 8,400,000 bytes | SPEC §5.2; larger files are never read |
+| Paths listed by a client | first 5,000 | kernel `LIMITS.maxManifestPaths` |
+| Whole-site preread (viewer only) | 32 MB, 2,000 files | `loadSite` defaults; the gateway reads on demand and has no such limit |
+| Read in one call | 96 KB; larger files in 96 KB segments | SPEC §5.3 |
+
+> 中文：一块 24,000 字节；单文件 8.4 MB；客户端最多列 5,000 个路径；预览查看器整站预读 32 MB / 2,000 文件（网关按需读，没有这条限制）。
+
+### 7. Being 100% on-chain / 做到 100% 链上
+
+A shell shows the "100% on-chain" badge only when both the static scan and the runtime check are clean (SPEC §8). To pass:
+
+- **No off-chain references** anywhere in HTML or CSS: no `https://…` or `//host` in `src`, `href`, `action`, `poster`, `srcset`, CSS `url()`, `@import`, or `<meta http-equiv="refresh">`. Self-host fonts, icons, and every script; drop analytics, CDN copies of libraries, embedded videos from third parties.
+- **No runtime fetches off chain**: `fetch`, `XMLHttpRequest`, dynamic `<script>` and `<img>` to external hosts are blocked and listed by the gateway and the viewer. If your app needs external data, users must allow it per site, and the badge is lost.
+- Relative paths only (section 2). Under the gateway, `location.origin` is `https://<id>-<cpu>.<gateway>`; under a desktop app it is `tape://<id>.<cpu>.tape`. Never hard-code either.
+- Chain data itself is fine: reading BNB Chain through the wallet's provider (`window.ethereum`) or through the configured public nodes is allowed and does not count as off-chain.
+- Client-side routing: see section 4. Do not rely on `location.href` assignments to navigate inside the preview viewer; use `<a href>` links, which every shell intercepts correctly.
+
+> 中文：HTML/CSS 里不能有任何链外地址（字体、图标、脚本、统计、CDN 都要自托管）；运行时不能有链外 fetch；只用相对路径；不要写死来源；读链本身不算链外。
+
+### 8. Activate the name / 开通名字
+
+Clients that follow the specification display a site only when its name is **activated** (SPEC §3.4). Activation is a payment recorded in `DomainBinding`:
+
+- Price: `monthlyFee` = 0.08 BNB per 30 days; 1–120 months in one transaction (up to 10 years); non-refundable.
+- Call `DomainBinding.bind("4246.0.tape", container, months)` with `msg.value = months × monthlyFee`, from the holder's wallet. The console offers a button for this.
+- **One payment per container.** If your container has already paid for a domain (for example `example.com` through HashPort), the on-chain name `4246.0.tape` is activated too, with the same expiry: `isContainerLive(container)` is true. Payments made before 2026-09-13 are copied over by calling `syncContainer(domain, container)` once (anyone may call it).
+- The record follows the container: if you sell the circuit, the buyer keeps the remaining time.
+- Nobody can activate your name for their own container; clients only accept the container derived from the name.
+
+> 中文：客户端只显示已开通的名字。开通 = 在 DomainBinding 付费：每 30 天 0.08 BNB，一次 1–120 个月，不退款；调用 `bind("4246.0.tape", 容器, 月数)`。**容器付过一次就够**：为域名付过费的容器，链上名字自动算开通；2026-09-13 之前的付费调一次 `syncContainer` 同步。转让电路，剩余时间跟着走。别人无法用自己的容器给你的名字付费。
+
+### 9. Test before you pay / 付费前自测
+
+- **Viewer**: run `npm run dev:viewer`, open `http://127.0.0.1:8095/viewer/?dev#/4246.0.tape`. The `?dev` flag (localhost only) previews names that are not activated yet.
+- **Gateway**: run `npm run dev:gateway`, open `http://4246-0.localhost:8096/.tape/status`, tick **Dev preview** and save. Then open `http://4246-0.localhost:8096/`. The status page lists every file read, whether it verified, every off-chain reference found, and every request blocked at runtime: that is your "100% on-chain" checklist.
+- Both previews read the real chain, so publish first, then test, then pay.
+
+> 中文：查看器加 `?dev`（只在本机生效）或网关状态页打开「开发预览」，就能看还没开通的名字。状态页列出每个文件的校验结果、链外引用和被拦截的请求，就是「100% 链上」的自查单。先发布，再自测，再付费。
+
+### 10. Verify your own site / 核对自己的站
+
+- Gateway status page `/.tape/status`: each file shows "verified against chain" or not, with the on-chain hash in the `x-tape-sha256` response header.
+- Command line, mainnet read-only:
+
+```bash
+node -e "import('./kernel/src/index.js').then(async ({createKernel}) => { const k = createKernel(); const r = await k.resolve('4246.0.tape'); const s = await k.openSite(r); for (const p of s.manifest.paths) { const f = await s.get(p); console.log(f.status, f.sha256, p); } })"
+```
+
+- Compare with your local files: `shasum -a 256 dist/index.html`. A `status` of `incomplete` means the upload is unfinished or a chunk is wrong; `no-hash` means you declared an all-zero hash (the site is shown but marked unverified).
+- Browser extension: on an https site served through HashPort, the popup re-downloads the page and its scripts and compares them with the chain.
+
+> 中文：状态页看每个文件是否「已与链上核对」；命令行用内核逐个读取并打印状态和哈希，与本地 `shasum -a 256` 比对；`incomplete` = 上传没完成或某块错了，`no-hash` = 没声明哈希。
+
+### 11. Update, transfer, take down / 更新、转让、下线
+
+- **Update**: `putFile` again with the new hash (replaces the whole file), then `appendChunk` as needed. Readers pin every site open to one block, so they never see a half-updated site; clients that watch the site show "the site has been updated, reload".
+- **Transfer**: sell or send the circuit NFT. The site, the container, and the remaining activation time go with it. While the circuit is listed on the market you cannot edit the site.
+- **Take down**: `removeFile` every path. There is no other way: the chain keeps history, and clients read current state only. `unbind` stops a domain but does not lower the container's activation, so the on-chain name stays live until it expires.
+
+> 中文：更新 = 重新 `putFile`（整体替换）；读者钉住区块，看不到半新半旧。转让 NFT，网站、容器、剩余开通时间一起走；挂单期间不能改。下线只能 `removeFile` 删文件；`unbind` 只停域名，不影响链上名字的开通期。
+
+---
+
+## Kernel API reference / 内核 API 参考
+
+`@tapekit/kernel` reads, resolves and verifies; it never renders and never touches a wallet. Zero dependencies; runs in browsers, Service Workers and Node ≥ 18. Types: [`kernel/index.d.ts`](kernel/index.d.ts).
+
+### Install and import / 安装与引入
+
+Until the npm release, import from the repository:
+
+```js
+import { createKernel, createIdbCache, createFsCache, createMemoryCache } from './kernel/src/index.js';
+```
+
+Every export: `createKernel`, `statusText`, `STATUS_TEXT`, `SiteError`, `createRpc`, `RpcError`, `canonicalJson`, `parseInput`, `formatName`, `formatUrl`, `InputError`, `normalizePath`, `resolvePath`, `safeContentType`, `scanSite`, `scanHtml`, `scanCss`, `isExternal`, `collectReferences`, `keccak256`, `keccakHex`, `toChecksumAddress`, `sha256Hex`, `BSC_MAINNET`, `LIMITS`, `IMPL_SLOT`, `SEL`, `SIG`, `TOPIC`, `EVENT_SIG`, `createMemoryCache`, `createFsCache`, `createIdbCache`, `setLocale`, `getLocale`, `detectLocale`, `t`, `tt`, `both`, `messages`, `KernelError`.
+
+### createKernel(options)
+
+| Option | Default | Meaning |
+|---|---|---|
+| `rpcUrls` | the 4 public nodes in `BSC_MAINNET.rpcs` | JSON-RPC endpoints; use different operators |
+| `quorum` | 2 | how many nodes must return identical results |
+| `rpc` | — | bring your own client from `createRpc()` instead of `rpcUrls`/`quorum` |
+| `fetchImpl` | global `fetch` | for tests or custom transports |
+| `cache` | `createMemoryCache()` | persistent cache; see Caches |
+| `cacheBytes` | 64 MiB | size of the default memory cache |
+| `resolveTtlMs` | 60000 | how long a resolution result is reused (SPEC §10 says at most 60 s) |
+| `isBlocked` | `() => false` | `({container, name}) => boolean` blocklist hook (SPEC §9) |
+| `network` | `BSC_MAINNET` | override any constant (addresses, `expectedImpl`, `nameSuffix`) |
+| `locale` | current | `'zh'` or `'en'` for messages |
+| `skipImplCheck` | false | tests only; disables the ERC-1967 pin check |
+
+Returns a `Kernel` with: `config`, `rpc`, `cache`, `parseInput`, `resolve`, `manifest`, `getFile`, `openSite`, `loadSite`, `checkStores`, `cpuIndexOf`, `cpuAt`, `domainLive`, `watch`, `normalizePath`, `resolvePath`, `setLocale`, `getLocale`, `statusText`.
+
+> 中文：`createKernel` 的选项：节点列表与法定人数、缓存实现、解析结果缓存时长、屏蔽钩子、网络常量覆盖、语言。
+
+### kernel.resolve(input, opts)
+
+`input`: any SPEC §2.4 form, or a `ParsedInput` from `parseInput()`. `opts.fresh` bypasses the resolution cache; `opts.block` pins to a given block instead of choosing one.
+
+Returns a `Resolution`:
+
+| Field | Meaning |
+|---|---|
+| `status` | `ok` \| `unpaid` \| `not-opened` \| `no-such-cpu` \| `no-such-token` \| `not-tapeout` \| `blocked` \| `store-changed` |
+| `name`, `url` | canonical name `4246.0.tape` and URL `tape://4246.0.tape/<path>` |
+| `cpu`, `cpuName`, `circuits`, `tokenId` | processor number, name, contract; circuit #ID |
+| `container`, `holder`, `opened` | derived container, current NFT holder, whether opened |
+| `paid`, `paidUntil`, `paidVia` | activation; `paidVia` is `'name'`, `'container'` or null |
+| `block`, `stores` | the pinned block and the implementation check (`stores.ok`, per-proxy details) |
+| `path` | the path part of the input, if any |
+
+Throws `InputError` for unparsable input and `RpcError` when nodes disagree or too few answer. Every step of SPEC §3.2/§3.3 is performed at `block`.
+
+> 中文：接受 §2.4 的所有写法；返回状态、规范名字、网址、处理器、容器、持有人、开通信息、钉住的区块和实现核对结果。
+
+### kernel.openSite(res) → site
+
+Reads only the manifest (path list, fallback, registry) and returns an on-demand handle:
+
+| Member | Meaning |
+|---|---|
+| `site.manifest` | `{ registry, paths, pathSet, fallback, truncated, block }` |
+| `site.files` | `Map<realPath, SiteFile>` of everything read so far |
+| `site.get(path)` | see below |
+| `site.prefetch(paths, onProgress)` | batch read, requests merged |
+| `site.info(realPath)` | on-chain `fileInfo` |
+| `site.res` | the resolution it was opened from |
+
+All reads are pinned to `res.block`.
+
+### site.get(path) / site.prefetch(paths) / site.info(path)
+
+`get(requestedPath)` applies SPEC §6 (normalise, `index.html`, fallback) and returns:
+
+- a `SiteFile`: `{ path, bytes, size, contentType, declaredSha, sha256, updatedAt, verified, status, fromCache }` where `status` is `ok` (hash matches), `no-hash` (owner declared none; shown as unverified) or `incomplete` (length or hash mismatch: do not display);
+- `{ status: 'too-large', … }` for files above 8,400,000 bytes;
+- `null` for 404.
+
+Verified files are stored in the cache under their on-chain sha256, so a second read anywhere (another site open, another day) is served locally without re-verification. Concurrent `get` calls for the same path share one read.
+
+> 中文：`get` 按 §6 落到真实路径并读取校验；`status` 为 `ok` / `no-hash` / `incomplete`，超限返回 `too-large`，不存在返回 null。校验过的文件按链上 sha 进缓存。
+
+### kernel.loadSite(res, opts)
+
+Whole-site read for small sites (the viewer uses it in preview mode). `opts.maxBytes` (32 MiB), `opts.maxFiles` (2000), `opts.onProgress`. Throws `SiteError` (`too-many-files`, `too-large`) instead of rendering half a site. Returns `{ manifest, files, problems, totalBytes, site }`.
+
+### kernel.watch(site, onChange, opts)
+
+Polls `pathCount`, `fallbackPath` and the `fileInfo` of known paths (first `maxPaths` of the manifest plus everything read) every `intervalMs` (30 s). On any change it invalidates the resolution cache and calls `onChange({ changed, removed, added, fallbackChanged, count, block })`. Returns a `stop()` function. Used instead of `eth_getLogs` because public nodes rarely serve logs.
+
+> 中文：轮询已知文件的链上信息，变了就回调并让解析缓存失效；返回停止函数。
+
+### Caches / 缓存
+
+Interface: `{ kind, get(key) → {meta, bytes} | undefined, set(key, meta, bytes), delete(key), clear() }`. Entries are LRU-evicted by total bytes.
+
+| Factory | Where | Notes |
+|---|---|---|
+| `createMemoryCache({ maxBytes })` | anywhere | default, 64 MiB |
+| `createFsCache(dir, { maxBytes })` | Node | one directory, `<hash>.bin` + `<hash>.json` per entry, 512 MiB default |
+| `createIdbCache(name, { maxBytes })` | browsers, Service Workers | IndexedDB, 256 MiB default |
+
+What is cached: files by on-chain sha256 (content-addressed, never stale), resolution results for `resolveTtlMs`, the processor number table (append-only, never expires). Bring your own implementation for anything else (SQLite, a KV store) by implementing the four methods.
+
+### RPC client / 节点客户端
+
+`createRpc({ urls, quorum, timeoutMs, hedgeMs, maxBatch, fetchImpl, shuffle, retries, backoffMs, cooldownMs })`:
+
+- `many(reqs)`: a batch of `{ method, params }`; each request needs `quorum` identical answers from different nodes, otherwise it rejects with `RpcError` (`rpc.conflict` on disagreement, `rpc.short` when too few nodes answer). Extra nodes are asked after `hedgeMs` if the first ones are slow.
+- `pinBlock()`: the second-highest head among the nodes minus 2 blocks.
+- Object results (blocks, receipts) are compared as canonical JSON; the original object is in `raw`.
+- Retries on HTTP 429 / 5xx / network errors with exponential backoff; a rate-limited node is ordered last for `cooldownMs`.
+- `stats()`: per node `{ ok, fail, rateLimited, lastMs, lastError, cooldownUntil }`, what the gateway status page shows.
+
+> 中文：多节点核对客户端：不一致即拒绝、慢了追加节点、429 退避与冷却、每节点统计。
+
+### Errors and bilingual messages / 错误码与双语文案
+
+All errors extend `KernelError`: `code` is stable, `message` follows the current locale, `messages` has both `{ zh, en }`, `detail` may carry extra data.
+
+| Class | `code` | When |
+|---|---|---|
+| `InputError` | `input` | the address cannot be parsed (`input.empty`, `input.decimal`, `input.range`, `input.unknown`) |
+| `RpcError` | `rpc` | `rpc.conflict`, `rpc.short`, `rpc.heads`, `rpc.none` |
+| `SiteError` | `chain`, `too-many-files`, `too-large` | a chain call reverted unexpectedly; site above `loadSite` limits |
+
+Locale: `setLocale('zh' | 'en')`, `getLocale()`, `detectLocale()` (from `navigator.languages` or `LANG`). Text: `t(key, vars)` current locale, `tt(key, vars)` both, `both(key, vars)` "中文 / English". `statusText(status)` gives the human text of a status code; `statusText(status, 'both')` both languages. All keys and texts are in `messages`.
+
+### Helpers / 工具函数
+
+| Function | Purpose |
+|---|---|
+| `parseInput(str)` | any §2.4 form → `{ kind: 'name' \| 'container' \| 'circuit', … }` |
+| `formatName(tokenId, cpu)`, `formatUrl(tokenId, cpu, path)` | `4246.0.tape`, `tape://4246.0.tape/path` |
+| `normalizePath(raw)`, `resolvePath(requested, pathSet, fallback)`, `safeContentType(ct)` | SPEC §6 and §5.6 |
+| `scanHtml(text)`, `scanCss(text)`, `scanSite(files)`, `isExternal(url)` | the static "100% on-chain" scan (SPEC §8) |
+| `collectReferences(text, 'html' \| 'css', fromDir)` | in-site references, for prefetching |
+| `sha256Hex(bytes)`, `keccak256(input)`, `keccakHex(input)`, `toChecksumAddress(addr)` | hashing without dependencies |
+| `BSC_MAINNET`, `LIMITS`, `IMPL_SLOT`, `SEL`, `SIG`, `TOPIC`, `EVENT_SIG` | constants: addresses, limits, ERC-1967 slot, selectors, event topics |
+
+### Types / 类型
+
+[`kernel/index.d.ts`](kernel/index.d.ts) describes every export (`Kernel`, `Resolution`, `Site`, `SiteFile`, `Cache`, `Rpc`, `KernelOptions`, …). It is hand-written and checked against a sample program with `npm run test:types`. Once published, `import type { Resolution } from '@tapekit/kernel'` works out of the box.
