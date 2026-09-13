@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 网关屏蔽：node sw-gateway/block.mjs <链上名字或容器地址> ["原因"]  → 追加到 blocklist.txt，然后 build + deploy。
+// 网关屏蔽：node sw-gateway/block.mjs <链上名字或容器地址> ["原因"]  → 追加到 blocklist.txt，然后 build + deploy。**这是真操作，会立刻发布**。
 // 去掉：node sw-gateway/block.mjs --remove <名字或地址>
 import fs from 'node:fs'; import path from 'node:path'; import { execSync } from 'node:child_process'; import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url)); const file = path.join(here, 'blocklist.txt');
