@@ -254,7 +254,12 @@ export function createKernel(options = {}) {
     if (info.sha === ZERO32) return null;
     const hit = await cache.get(fileKey(info.sha));
     if (!hit || hit.bytes.length !== info.size) return null;
-    return { path, bytes: hit.bytes, size: info.size, contentType: safeContentType(info.contentType), declaredSha: info.sha, sha256: info.sha, updatedAt: info.updatedAt, verified: true, status: 'ok', fromCache: true };
+    // 缓存键是链上哈希，但「键对」不等于「字节对」：本地缓存可能被改写、被写坏，或是另一份实现写进去的。
+    // SPEC §5 的承诺是「长度或哈希不符就不显示」，所以命中缓存也要重新算一次 SHA-256；
+    // 不符就返回 null，让调用方照常从链上重读 —— 坏条目顺手被好字节覆盖掉（自愈）。
+    const actual = await sha256Hex(hit.bytes);
+    if (actual !== info.sha) return null;
+    return { path, bytes: hit.bytes, size: info.size, contentType: safeContentType(info.contentType), declaredSha: info.sha, sha256: actual, updatedAt: info.updatedAt, verified: true, status: 'ok', fromCache: true };
   };
 
   async function verify(path, info, bytes) {
