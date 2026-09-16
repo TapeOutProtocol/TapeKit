@@ -135,7 +135,15 @@ try {
   try { ws.close(); } catch {}
   chrome.kill('SIGKILL');
   server.close();
-  fs.rmSync(profile, { recursive: true, force: true });
+  // Windows：kill 之后 Chrome 的子进程还会短暂占着 user-data-dir，立刻删除会得到 EPERM（macOS/Linux 上不会）。
+  // 先等它退场（最多 5 秒），再带重试删；仍然删不掉就放过——它在系统临时目录里，清理不该让测试结果变成失败。
+  await new Promise((done) => {
+    if (chrome.exitCode !== null) return done();
+    chrome.once('exit', done);
+    setTimeout(done, 5000);
+  });
+  try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+  catch (e) { console.log(`临时目录未能删除，留给系统清理：${profile}（${e && e.code || e}）`); }
 }
 const failed = results.filter((r) => !r.ok).length;
 console.log(`\n${results.length - failed}/${results.length} 通过`);
