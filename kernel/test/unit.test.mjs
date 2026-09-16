@@ -70,11 +70,12 @@ test('ABI 解码与 ethers 一致，并拒绝越界数据', () => {
 });
 
 test('输入解析：各种写法规范化到同一个名字', () => {
-  for (const s of ['4246.0.tape', '4246.0', 'tape://4246.0/', 'tape://4246.0.tape/', '#4246@0', '4246@0', ' 4246.0.TAPE ']) {
+  for (const s of ['4246.0.tape', '4246.0', 'tape://4246.0/', 'tape://4246.0.tape/', 'web+tape://4246.0/', 'web+tape://4246.0.tape/', 'WEB+TAPE://4246.0.tape/', '#4246@0', '4246@0', ' 4246.0.TAPE ']) {
     const r = parseInput(s);
     assert.equal(r.kind, 'name', s); assert.equal(r.tokenId, 4246n); assert.equal(r.cpu, 0n);
   }
   assert.equal(parseInput('tape://4246.0/assets/a.js?x=1#h').path, 'assets/a.js');
+  assert.equal(parseInput('web+tape://4246.0.tape/assets/a.js?x=1#h').path, 'assets/a.js');   // SPEC §2.3 别名与 tape:// 完全等价
   assert.equal(parseInput('4246.0.tape/docs/').path, 'docs/');
   const c = parseInput('0x86DDaEF00401E3F10418398D67D7189fc458eA95/app');
   assert.equal(c.kind, 'container'); assert.equal(c.container, '0x86ddaef00401e3f10418398d67d7189fc458ea95'); assert.equal(c.path, 'app');

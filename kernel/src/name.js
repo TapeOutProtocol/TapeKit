@@ -5,7 +5,7 @@
 //              （主机名就是完整的链上名字。Chromium 会把 4246.0 这种主机当 IPv4 解析，所以后缀不能省；输入仍接受 tape://4246.0/）
 //
 // 输入框接受的写法（都会被规范化成上面两种）：
-//   4246.0.tape   4246.0   tape://4246.0/a.html   #4246@0   0x<容器地址>   0x<处理器合约>#4246
+//   4246.0.tape   4246.0   tape://4246.0/a.html   web+tape://4246.0/a.html   #4246@0   0x<容器地址>   0x<处理器合约>#4246
 
 import { LIMITS } from './config.js';
 import { KernelError, t } from './i18n.js';
@@ -36,7 +36,8 @@ function splitPath(rest) {
 export function parseInput(raw) {
   let s = String(raw ?? '').trim();
   if (!s) throw new InputError('input.empty');
-  s = s.replace(/^tape:\/\//i, '');
+  // SPEC §2.3：web+tape:// 是 tape:// 的别名（网页只能用 web+ 开头的协议注册处理器），§2.4 要求外壳两种写法都接受。
+  s = s.replace(/^(?:web\+)?tape:\/\//i, '');
   let m;
   if ((m = s.match(/^#?([0-9]+)@([0-9]+)(\/.*)?$/))) {
     return { kind: 'name', tokenId: decimal(m[1], 'what.tokenId', 1n, LIMITS.maxTokenId), cpu: decimal(m[2], 'what.cpu', 0n, LIMITS.maxCpuIndex), path: splitPath(m[3]) };
