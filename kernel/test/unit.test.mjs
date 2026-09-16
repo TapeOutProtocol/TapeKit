@@ -222,6 +222,75 @@ test('内核：解析结果与处理器编号表走缓存（第二次不再问�
   assert.equal(typeof r2.block, 'string');
 });
 
+// 假链：只回答「缓存校验」这一个测试需要的调用。返回值在这里手写 ABI 编码，够用即可。
+const word = (n) => BigInt(n).toString(16).padStart(64, '0');
+const padHex = (bytes) => [...bytes].map((x) => x.toString(16).padStart(2, '0')).join('').padEnd(Math.ceil(bytes.length / 32) * 64, '0');
+const abiDynamic = (bytes) => '0x' + word(32) + word(bytes.length) + padHex(bytes);
+const abiString = (s) => abiDynamic(new TextEncoder().encode(s));
+const abiStringArray = (arr) => {
+  const items = arr.map((s) => new TextEncoder().encode(s));
+  let head = word(32) + word(items.length), tail = '', off = items.length * 32;
+  for (const b of items) {
+    head += word(off);
+    const hex = [...b].map((x) => x.toString(16).padStart(2, '0')).join('').padEnd(Math.ceil(b.length / 32) * 64, '0');
+    tail += word(b.length) + hex; off += 32 + hex.length / 2;
+  }
+  return '0x' + head + tail;
+};
+
+test('缓存字节与链上不符：命中时重新核对，丢弃坏缓存并从链上重读', async () => {
+  const CPU = '0x' + '50'.repeat(20), CONTAINER = '0x' + '86'.repeat(20), HOLDER = '0x' + '57'.repeat(20);
+  const GOOD = new TextEncoder().encode('on-chain bytes, verified');
+  const sha = await sha256Hex(GOOD);
+  const BAD = new Uint8Array(GOOD); BAD[0] ^= 0x20;                  // 与 GOOD 等长，内容不同
+  assert.equal(BAD.length, GOOD.length);
+  assert.notEqual(await sha256Hex(BAD), sha);
+
+  const cache = createMemoryCache();
+  await cache.set('file:v1:' + sha, { size: GOOD.length }, BAD);     // 预置一条「键对、字节错」的缓存
+
+  const CT = new TextEncoder().encode('text/html');
+  const answers = {
+    [SEL.cpuCount]: '0x' + word(1),
+    [SEL.cpuAt]: '0x' + CPU.slice(2).padStart(64, '0'),
+    [SEL.accountOf]: '0x' + CONTAINER.slice(2).padStart(64, '0'),
+    [SEL.isOpened]: '0x' + word(1),
+    [SEL.ownerOf]: '0x' + HOLDER.slice(2).padStart(64, '0'),
+    [SEL.name]: abiString('Test CPU'),
+    [SEL.isLive]: '0x' + word(0),
+    [SEL.paidUntil]: '0x' + word(0),
+    [SEL.isContainerLive]: '0x' + word(1),                            // 容器付过费 → status ok
+    [SEL.containerPaidUntil]: '0x' + word(1791470091),
+    [SEL.pathCount]: '0x' + word(1),
+    [SEL.fallbackPath]: abiString('index.html'),
+    [SEL.pathsRange]: abiStringArray(['index.html']),
+    [SEL.fileInfo]: '0x' + word(GOOD.length) + word(160) + sha.slice(2) + word(1791470091) + word(1) + word(CT.length) + padHex(CT),
+    [SEL.read]: abiDynamic(GOOD),
+  };
+  const fetchImpl = async (url, init) => {
+    const reqs = JSON.parse(init.body);
+    return { ok: true, json: async () => reqs.map((q) => ({ jsonrpc: '2.0', id: q.id, result: q.method === 'eth_blockNumber' ? '0x100' : answers[q.params[0].data.slice(0, 10)] })) };
+  };
+
+  const k = createKernel({ rpcUrls: ['a', 'b'], quorum: 2, fetchImpl, skipImplCheck: true, cache });
+  const res = await k.resolve('4246.0.tape');
+  assert.equal(res.status, 'ok');
+  const f = await (await k.openSite(res)).get('index.html');
+  assert.equal(f.status, 'ok');
+  assert.equal(f.verified, true);
+  assert.equal(f.sha256, sha);
+  assert.equal(f.fromCache, false, '坏缓存必须丢弃，改为从链上重读');
+  assert.equal(new TextDecoder().decode(f.bytes), 'on-chain bytes, verified');
+
+  // 缓存里此时已是核对过的字节：换一个内核（模拟下次冷启动）应当命中缓存，且仍然是「已核对」
+  const k2 = createKernel({ rpcUrls: ['a', 'b'], quorum: 2, fetchImpl, skipImplCheck: true, cache });
+  const f2 = await (await k2.openSite(await k2.resolve('4246.0.tape'))).get('index.html');
+  assert.equal(f2.fromCache, true);
+  assert.equal(f2.verified, true);
+  assert.equal(f2.sha256, sha);
+  assert.equal(new TextDecoder().decode(f2.bytes), 'on-chain bytes, verified');
+});
+
 test('法定人数：一致的 revert 也是结果', async () => {
   const rv = () => ({ error: { code: 3, message: 'execution reverted', data: '0x08c379a0' } });
   const rpc = createRpc({ urls: ['a', 'b'], quorum: 2, shuffle: false, fetchImpl: fakeFetch({ a: rv, b: rv }) });
