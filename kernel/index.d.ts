@@ -109,21 +109,39 @@ export function createIdbCache(name?: string, options?: { maxBytes?: number }): 
 
 export type RpcOutcome = { ok: true; value: string; raw?: unknown; logs?: unknown[] } | { revert: true; data?: string; empty?: boolean };
 export interface NodeStats { ok: number; fail: number; rateLimited: number; lastMs: number | null; lastError: string | null; cooldownUntil: number }
+export interface RpcRequest {
+  method: string;
+  params: unknown[];
+  /** Pick the fields that must agree across nodes; the picked object is what the caller receives as `raw`. */
+  normalize?: (result: any) => unknown;
+}
+export interface ManyOptions {
+  /** Strict agreement: ask every node, reject on any disagreement, require `strictQuorum` agreeing answers. */
+  all?: boolean;
+}
 export interface Rpc {
   urls: string[];
   quorum: number;
+  /** Agreeing operators required in strict mode: 3, or 2 when only 2 operators are configured; never fewer than 2 unless set explicitly. */
+  strictQuorum: number;
+  /** Distinct operators among `urls`. */
+  operatorCount: number;
+  /** Operator label of a node URL: the `operators` entry, else the IP address, else the last two host labels. */
+  operatorOf(url: string): string;
   /** Runs a batch of JSON-RPC requests; every request needs `quorum` identical answers from different nodes. Rejects with RpcError on disagreement. */
-  many(reqs: Array<{ method: string; params: unknown[] }>): Promise<RpcOutcome[]>;
+  many(reqs: RpcRequest[], opts?: ManyOptions): Promise<RpcOutcome[]>;
   calls(items: Array<{ to: Address; data: Hex }>, block: Hex | 'latest'): Promise<RpcOutcome[]>;
   storageAt(addr: Address, slot: Hex, block: Hex | 'latest'): Promise<RpcOutcome>;
-  /** A block height that at least `quorum` nodes already have (second-highest head minus 2). */
+  /** A block height that at least `quorum` nodes already have (the `quorum`-th highest head minus 2), waiting `headGraceMs` for the other nodes. */
   pinBlock(): Promise<Hex>;
-  getLogs(filter: object): Promise<unknown[]>;
+  getLogs(filter: object, opts?: ManyOptions): Promise<unknown[]>;
   stats(): Record<string, NodeStats>;
 }
 export interface RpcOptions {
   urls: string[];
   /** default 2 */ quorum?: number;
+  /** agreeing operators required in strict mode; default max(2, min(3, operators)) */ strictQuorum?: number;
+  /** explicit operator label per URL; nodes of one operator count once */ operators?: Record<string, string>;
   /** default 10000 */ timeoutMs?: number;
   /** ask another node if no agreement within this time; default 1500 */ hedgeMs?: number;
   /** default 40 */ maxBatch?: number;
@@ -132,9 +150,40 @@ export interface RpcOptions {
   /** retries on 429 / 5xx / network errors; default 2 */ retries?: number;
   /** default 400 (doubles each retry, with jitter) */ backoffMs?: number;
   /** rate-limited nodes are ordered last for this long; default 20000 */ cooldownMs?: number;
+  /** how long pinBlock waits for the remaining nodes after `quorum` heads arrived; default 1500 */ headGraceMs?: number;
+  /** overall time limit of a strict-mode many(); default 1.5 × timeoutMs */ strictDeadlineMs?: number;
 }
 export function createRpc(options: RpcOptions): Rpc;
 export function canonicalJson(value: unknown): string;
+
+// ---------------------------------------------------------------- identity (TapeKit core, shared with TapeSend)
+
+export type IdentityStatus = 'ok' | 'no-such-cpu' | 'no-such-token' | 'not-tapeout';
+export interface ResolvedIdentity {
+  status: IdentityStatus;
+  name?: string;
+  tokenId?: bigint;
+  cpu?: bigint;
+  cpuName?: string;
+  circuits?: Address;
+  container?: Address | null;
+  holder?: Address | null;
+  opened?: boolean;
+}
+/** Identity resolution of SPEC §3.2 steps 1–4 and §3.3 steps 1–4, without store pinning, blocking or activation. */
+export interface Identity {
+  network: Network;
+  batch(items: Array<{ to: string; sel: string; types?: string[]; values?: unknown[]; out: string[] }>, block: Hex): Promise<any[]>;
+  one(item: { to: string; sel: string; types?: string[]; values?: unknown[]; out: string[] }, block: Hex): Promise<any>;
+  cpuAt(cpu: bigint | number, block: Hex): Promise<Address | null>;
+  cpuIndexOf(circuits: string, block: Hex): Promise<bigint | null>;
+  resolveIdentity(
+    parsed: ParsedInput,
+    block: Hex,
+    opts?: { prepend?: Array<{ method: string; params: unknown[] }>; afterFirst?: (outcomes: unknown[]) => boolean },
+  ): Promise<{ prepended: unknown[]; identity: ResolvedIdentity | null }>;
+}
+export function createIdentity(options: { rpc: Rpc; network?: Partial<Network>; cache?: Cache; fail?: (what: string) => never; strict?: boolean }): Identity;
 
 // ---------------------------------------------------------------- kernel
 

@@ -1,6 +1,7 @@
 // @tapekit/kernel —— TapeOut 纯链上网站的读取内核（开源，MIT）。规范见 ../../SPEC.md（英文正本）与 ../../SPEC.zh.md（中文）。
 export { createKernel, STATUS_TEXT, statusText, SiteError } from './kernel.js';
 export { createRpc, RpcError } from './rpc.js';
+export { createIdentity } from './identity.js';
 export { parseInput, formatName, formatUrl, InputError } from './name.js';
 export { normalizePath, resolvePath, safeContentType } from './path.js';
 export { scanSite, scanHtml, scanCss, isExternal, collectReferences } from './purity.js';

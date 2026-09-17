@@ -6,9 +6,9 @@
 
 import { BSC_MAINNET, IMPL_SLOT, LIMITS } from './config.js';
 import { createRpc } from './rpc.js';
-import { encodeCall, decodeResult } from './abi.js';
+import { createIdentity } from './identity.js';
 import { SEL } from './selectors.js';
-import { parseInput, formatName, formatUrl } from './name.js';
+import { parseInput, formatUrl } from './name.js';
 import { normalizePath, resolvePath, safeContentType } from './path.js';
 import { sha256Hex } from './sha.js';
 import { keccakHex } from './keccak.js';
@@ -30,12 +30,6 @@ export function statusText(status, mode) {
 /** 兼容旧接口：当前语言的一张表 */
 export const STATUS_TEXT = new Proxy({}, { get: (_, k) => (typeof k === 'string' && STATUSES.includes(k) ? t('status.' + k) : undefined), ownKeys: () => STATUSES, getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
 
-const callReq = (it, block) => ({ method: 'eth_call', params: [{ to: it.to, data: encodeCall(it.sel, it.types || [], it.values || []) }, block] });
-const decodeOutcome = (out, oc) => {
-  if (!oc.ok) return { revert: true, data: oc.data };
-  if (oc.value === '0x') return { revert: true, empty: true };   // 地址上没有代码
-  return decodeResult(out, oc.value);
-};
 const big = (x) => (typeof x === 'bigint' ? x : BigInt(x));
 // 解析结果里的 bigint 存进缓存要转字符串，取出来再转回
 const freeze = (r) => JSON.parse(JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? { $big: v.toString() } : v)));
@@ -56,18 +50,12 @@ export function createKernel(options = {}) {
   const isBlocked = options.isBlocked || (() => false);
   const cache = options.cache || createMemoryCache({ maxBytes: options.cacheBytes ?? 64 * 1024 * 1024 });
   const resolveTtl = options.resolveTtlMs ?? 60_000;
-  const cpuByIndex = new Map();   // 处理器编号 → 合约地址（小写）
-  const indexByCpu = new Map();   // 合约地址 → 编号
-  let cpuTableLoaded = false;
-  const CPU_KEY = `cpu-index:v1:${net.chainId}:${net.factory}`;
   const fileKey = (sha) => `file:v1:${sha}`;
   const resolveKey = (input) => `resolve:v1:${net.chainId}:${input}`;
 
-  async function batch(items, block) {
-    const outcomes = await rpc.many(items.map((it) => callReq(it, block)));
-    return outcomes.map((oc, i) => decodeOutcome(items[i].out, oc));
-  }
-  const one = async (item, block) => (await batch([item], block))[0];
+  // 身份解析、处理器编号表、多节点读调用都来自 TapeKit 核心（identity.js），与 TapeSend 共用
+  const identity = createIdentity({ rpc, network: net, cache, fail: (what) => { throw new SiteError('chain', 'site.chain-call', { what }); } });
+  const { batch, one, cpuIndexOf, cpuAt } = identity;
   const must = (r, what) => { if (r.revert) throw new SiteError('chain', 'site.chain-call', { what }); return r; };
 
   const storeAddrs = () => (options.skipImplCheck ? [] : Object.keys(net.expectedImpl || {}));
@@ -85,48 +73,6 @@ export function createKernel(options = {}) {
   async function checkStores(block) {
     const addrs = storeAddrs();
     return judgeStores(addrs, await rpc.many(addrs.map((a) => ({ method: 'eth_getStorageAt', params: [a, IMPL_SLOT, block] }))));
-  }
-
-  // ---- 处理器编号表：第一次整表扫描后存进缓存，以后只补扫新增的编号
-  async function loadCpuTable() {
-    if (cpuTableLoaded) return;
-    cpuTableLoaded = true;
-    const saved = await cache.get(CPU_KEY);
-    if (saved && saved.meta && Array.isArray(saved.meta.cpus)) saved.meta.cpus.forEach((a, i) => { if (a) { cpuByIndex.set(i, a); indexByCpu.set(a, BigInt(i)); } });
-  }
-  async function saveCpuTable() {
-    const n = Math.max(-1, ...cpuByIndex.keys()) + 1;
-    const cpus = Array.from({ length: n }, (_, i) => cpuByIndex.get(i) || null);
-    await cache.set(CPU_KEY, { cpus, savedAt: Date.now() }, new Uint8Array());
-  }
-  /** 处理器合约 → 编号。工厂没有反查表，按下标分批扫描；扫过的都进缓存。 */
-  async function cpuIndexOf(circuits, block) {
-    const key = circuits.toLowerCase();
-    await loadCpuTable();
-    if (indexByCpu.has(key)) return indexByCpu.get(key);
-    const [count] = must(await one({ to: net.factory, sel: SEL.cpuCount, out: ['uint'] }, block), 'cpuCount');
-    const n = Number(count);
-    let changed = false;
-    for (let start = 0; start < n; start += 80) {
-      const idx = [];
-      for (let i = start; i < Math.min(n, start + 80); i++) if (!cpuByIndex.has(i)) idx.push(i);
-      if (!idx.length) continue;
-      const rs = await batch(idx.map((i) => ({ to: net.factory, sel: SEL.cpuAt, types: ['uint256'], values: [i], out: ['address'] })), block);
-      rs.forEach((r, k) => { if (!r.revert) { cpuByIndex.set(idx[k], r[0]); indexByCpu.set(r[0], BigInt(idx[k])); changed = true; } });
-      if (indexByCpu.has(key)) break;
-    }
-    if (changed) await saveCpuTable();
-    return indexByCpu.has(key) ? indexByCpu.get(key) : null;
-  }
-  /** 编号 → 处理器合约，带缓存 */
-  async function cpuAt(cpu, block) {
-    await loadCpuTable();
-    const i = Number(cpu);
-    if (cpuByIndex.has(i)) return cpuByIndex.get(i);
-    const r = await one({ to: net.factory, sel: SEL.cpuAt, types: ['uint256'], values: [cpu], out: ['address'] }, block);
-    if (r.revert) return null;
-    cpuByIndex.set(i, r[0]); indexByCpu.set(r[0], BigInt(i)); await saveCpuTable();
-    return r[0];
   }
 
   /**
@@ -149,58 +95,21 @@ export function createKernel(options = {}) {
     const block = opts.block || (await rpc.pinBlock());
     const res = { input, path: parsed.path, block, chainId: net.chainId };
 
-    // 第一轮：仓库实现核对 + 按输入类型的第一步查询，合成一次多节点请求
+    // 仓库实现核对与身份解析的第一步合成一次多节点请求；实现不在钉住名单里就不再往下读
     const addrs = storeAddrs();
-    const first = parsed.kind === 'name'
-      ? [{ to: net.factory, sel: SEL.cpuCount, out: ['uint'] }, { to: net.factory, sel: SEL.cpuAt, types: ['uint256'], values: [parsed.cpu], out: ['address'] }]
-      : parsed.kind === 'container'
-        ? [{ to: parsed.container, sel: SEL.token, out: ['uint', 'address', 'uint'] }]
-        : [{ to: net.factory, sel: SEL.isCPU, types: ['address'], values: [parsed.circuits], out: ['bool'] }];
-    const outcomes = await rpc.many([...addrs.map((a) => ({ method: 'eth_getStorageAt', params: [a, IMPL_SLOT, block] })), ...first.map((it) => callReq(it, block))]);
-    res.stores = judgeStores(addrs, outcomes);
+    const { identity: id } = await identity.resolveIdentity(parsed, block, {
+      prepend: addrs.map((a) => ({ method: 'eth_getStorageAt', params: [a, IMPL_SLOT, block] })),
+      afterFirst: (outcomes) => { res.stores = judgeStores(addrs, outcomes); return res.stores.ok; },
+    });
     if (!res.stores.ok) return { ...res, status: 'store-changed' };
-    const r1 = outcomes.slice(addrs.length).map((oc, i) => decodeOutcome(first[i].out, oc));
+    if (id.status !== 'ok' && id.status !== 'no-such-token') return { ...res, ...id };
 
-    let circuits, tokenId, cpu, container = null;
-    if (parsed.kind === 'name') {
-      tokenId = parsed.tokenId; cpu = parsed.cpu;
-      const [count] = must(r1[0], 'cpuCount');
-      if (cpu >= count || r1[1].revert) return { ...res, tokenId, cpu, status: 'no-such-cpu' };
-      [circuits] = r1[1];
-      await loadCpuTable();
-      if (!cpuByIndex.has(Number(cpu))) { cpuByIndex.set(Number(cpu), circuits); indexByCpu.set(circuits, cpu); await saveCpuTable(); }
-    } else {
-      if (parsed.kind === 'circuit') {
-        circuits = parsed.circuits; tokenId = parsed.tokenId;
-        if (r1[0].revert || !r1[0][0]) return { ...res, circuits, status: 'not-tapeout' };
-      } else {
-        container = parsed.container;
-        const tk = r1[0];
-        if (tk.revert || tk[0] !== BigInt(net.chainId)) return { ...res, container, status: 'not-tapeout' };
-        [, circuits, tokenId] = tk;
-        const isCpu = await one({ to: net.factory, sel: SEL.isCPU, types: ['address'], values: [circuits], out: ['bool'] }, block);
-        if (isCpu.revert || !isCpu[0]) return { ...res, container, circuits, status: 'not-tapeout' };
-      }
-      cpu = await cpuIndexOf(circuits, block);
-      if (cpu === null) return { ...res, container, circuits, status: 'not-tapeout' };
-    }
-
-    const [acct, opened, owner, cpuName] = await batch([
-      { to: net.opener, sel: SEL.accountOf, types: ['address', 'uint256'], values: [circuits, tokenId], out: ['address'] },
-      { to: net.opener, sel: SEL.isOpened, types: ['address', 'uint256'], values: [circuits, tokenId], out: ['bool'] },
-      { to: circuits, sel: SEL.ownerOf, types: ['uint256'], values: [tokenId], out: ['address'] },
-      { to: circuits, sel: SEL.name, out: ['string'] },
-    ], block);
-    const derived = must(acct, 'accountOf')[0];
-    // 容器地址输入：必须能从 (处理器, #ID) 精确算回同一个地址，否则是冒充的合约
-    if (container && derived !== container) return { ...res, container, circuits, status: 'not-tapeout' };
-    container = derived;
-    const name = formatName(tokenId, cpu, net.nameSuffix);
+    const { name, container, tokenId, cpu } = id;
     const base = {
-      ...res, name, url: formatUrl(tokenId, cpu, parsed.path), cpu, cpuName: cpuName.revert ? '' : cpuName[0],
-      circuits, tokenId, container, holder: owner.revert ? null : owner[0], opened: !opened.revert && opened[0] === true, paid: false, paidUntil: 0n, paidVia: null,
+      ...res, name, url: formatUrl(tokenId, cpu, parsed.path), cpu, cpuName: id.cpuName,
+      circuits: id.circuits, tokenId, container, holder: id.holder, opened: id.opened, paid: false, paidUntil: 0n, paidVia: null,
     };
-    if (owner.revert) return { ...base, status: 'no-such-token' };
+    if (id.status === 'no-such-token') return { ...base, status: 'no-such-token' };
     if (!base.opened) return { ...base, status: 'not-opened' };
     if (await isBlocked({ container, name })) return { ...base, status: 'blocked' };
     // 开通判据（任一条即可，SPEC §3.4）：① 这个名字 × 由名字算出的这个容器 付费未到期；② 这个容器为任何名字或域名付过费且未到期。
@@ -218,7 +127,6 @@ export function createKernel(options = {}) {
     return { ...base, paid, paidUntil, paidVia: nameLive ? 'name' : containerLive ? 'container' : null, status: paid ? 'ok' : 'unpaid' };
   }
 
-  /** 站点文件清单：先命中（pathCount > 0）的仓库为准。第一页与数量、fallback 一次取回。 */
   async function manifest(res, opts = {}) {
     const block = opts.block || res.block;
     const PAGE = 200;
