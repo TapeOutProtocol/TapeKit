@@ -51,7 +51,8 @@ const isZh = () => (uiLocale ?? (app.getLocale().startsWith('zh') ? 'zh' : 'en')
 function displayOf(url) {
   if ((url || '').startsWith(NOTICE_PREFIX)) return isZh() ? '已停止加载' : 'Stopped loading';
   const m = /^tape:\/\/(\d+)\.(\d+)\.tape(\/.*)?$/i.exec(url || '');
-  if (m) return `${m[1]}.${m[2]}.tape${m[3] && m[3] !== '/' ? m[3] : ''}`;
+  // 地址栏只显示 4246.0：.tape 只是内部网址用的（纯数字主机名会被当成 IP 地址），不给用户看
+  if (m) return `${m[1]}.${m[2]}${m[3] && m[3] !== '/' ? m[3] : ''}`;
   if (/^tape:\/\//i.test(url || '')) {
     // 非规范地址原样显示（包括结尾多出的点），不能修饰成和正规地址一样
     try { const u = new URL(url); return u.hostname + (u.pathname && u.pathname !== '/' ? u.pathname : ''); } catch { /* 无效地址 */ }
