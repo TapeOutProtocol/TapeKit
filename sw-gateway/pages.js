@@ -129,7 +129,7 @@ export function messagePage({ locale, kind, res, host, vars = {}, statusTextOf }
   switch (kind) {
     case 'unpaid': title = t('unpaidTitle'); html = `<p>${t('unpaid1', { name: esc(res.name) })}</p><p class="hint">${t('unpaid2', { name: esc(res.name) })}</p>`; break;
     case 'status': title = t('cannotShow'); html = `<p>${esc(st.statusText)}</p>`; break;
-    case 'not-found': title = t('notFound'); html = `<p class="mono">${esc(vars.path || '')}</p><p><a href="/">${t('back')}</a></p>`; break;
+    case 'not-found': title = t('notFound'); html = `<p><a href="/">${t('back')}</a></p>`; break; // 路径任何人都能构造，不回显，免得在知名网站名下显示攻击者的文字
     case 'too-large': title = t('tooLarge'); html = `<p class="mono">${esc(vars.path || '')}</p>`; break;
     case 'not-verified': title = t('notVerified'); html = `<p class="mono">${esc(vars.path || '')}</p>`; break;
     case 'bad-host': title = t('badHost'); html = `<p>${t('badHost1', { host: esc(vars.root || host) })}</p>`; break;
