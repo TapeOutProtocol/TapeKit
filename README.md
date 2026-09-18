@@ -158,6 +158,8 @@ TapeOut에서는 회로 NFT 하나가 온체인 컨테이너 하나에 묶이고
 |---|---|---|
 | [SPEC.md](SPEC.md) | English (normative / 正本) | tape:// On-Chain Website Specification v0.2: URL format, resolution, verification, node agreement, site isolation, Service Worker gateway requirements, blocking, caching, security, test vectors, **change rules (§15)**, shell compliance checklist (Appendix A), **contract interfaces (Appendix B)** |
 | [SPEC.zh.md](SPEC.zh.md) | 中文 | 同一份规范的中文版，逐节对应；有出入以英文版为准 |
+| [TAP-10.md](TAP-10.md) | English (normative / 正本) | **TAP-10 TapeSend v1.0** — the DeWEB messaging layer: chain table and endpoint IDs, the DeWEB hub (on-chain inbox and outbox, authorization, upgrade and seal), key derivation from a wallet signature, payload format `0x02` (X25519 + XChaCha20-Poly1305), content and attachments, message IDs and finality, reading, asset attachment verification, sending, security considerations, test vectors |
+| [TAP-10.zh.md](TAP-10.zh.md) | 中文 | TAP-10 的中文版，逐节对应；有出入以英文版为准 |
 
 Section guide / 章节导读:
 
@@ -184,6 +186,11 @@ Section guide / 章节导读:
 | [`sw-gateway/`](sw-gateway/) | **Service Worker gateway** | Lets ordinary Chrome / Edge / Firefox / Safari open on-chain sites with nothing installed, one real origin per site. Bootstrap page, Service Worker, script-free status pages, operator config, deployment rules, end-to-end test in real headless Chrome. See [sw-gateway/README.md](sw-gateway/README.md) |
 | [`extension/`](extension/) | **Browser extension** (Chrome MV3) | Address-bar keyword `tape`; verifies that the current https page matches the on-chain bytes; optional gateway domain setting. Build with `node build-extension.mjs` → `dist/extension/` |
 | [`viewer/`](viewer/) | **Web viewer** (preview mode) | Sandboxed-iframe shell with an opaque origin and strict CSP; the fallback when there is no extension and no gateway |
+| [`kernel/src/identity.js`](kernel/src/identity.js) | **Identity core** | Name → container resolution shared by the page kernel and TapeSend, so one name always means one container |
+| [`send/`](send/) | **TapeSend · DeWEB messaging layer** | Messages between containers, recorded in an on-chain inbox on the sender's chain. See [send/README.md](send/README.md) |
+| [`send/contracts/`](send/contracts/) | DeWEB hub | `DeWebHub` (UUPS proxy, same address on every chain). Foundry project: unit, fuzz, invariant and BSC fork tests, pinned-address test, deterministic deployment page (signed in a browser wallet) |
+| [`send/module/`](send/module/) | `@tapekit/send` | Keys, sealing, content and attachments, endpoint IDs, strict chain reads (inbox/outbox, keys, finality); test vectors in `test/vectors.json` |
+| [`apps/tapesend/`](apps/tapesend/) | TapeSend client | Web, desktop (Electron, with the `tape://` browser) and iOS/Android (Capacitor) |
 | [`GUIDE.md`](GUIDE.md) | 技术说明 (Chinese) | How to run, test, build and deploy each component; known limitations; next steps |
 | [`test/`](test/) | Render fixture | Headless-Chrome regression fixture for the preview renderer |
 | `dev-server.mjs` | Viewer dev server | `http://127.0.0.1:8095/viewer/` |
@@ -237,6 +244,8 @@ BNB Smart Chain, chainId 56. Full list and pinned implementations in [SPEC.md §
 ### Status and roadmap / 状态与路线
 
 - 2026-09-13: specification v0.2; kernel, viewer, extension and Service Worker gateway reference implementations; unit 22/22, mainnet read-only 9/9, gateway end-to-end 25/25. Official gateway live at **tapekit.org** (Cloudflare Workers static assets, wildcard route). **Not yet independently audited.**
+- 2026-09-17: **TAP-10 TapeSend** draft v0.5: hub contract, `@tapekit/send` module, indexer and notification service, after four rounds of internal review (contract security, cryptography, clean-room reimplementation from the spec, node agreement and verification, red team, services). Kernel: shared identity core (`kernel/src/identity.js`) and strict all-node agreement mode in the RPC client. The hub is **not deployed yet**; sealing the processor factory first is recommended (see [send/README.md](send/README.md)). **Not independently audited.**
+- 2026-09-18: **TapeSend becomes the DeWEB messaging layer.** The indexer is replaced by an on-chain inbox and outbox in the hub (the indexer and the indexer-based notification service are removed); endpoints carry the chain ID (`uint32(0) ‖ uint64(chainId) ‖ container`) so one address works across chains; payload format `0x02`; asset and image attachments. The DeWEB hub is **live on BNB Smart Chain** at `0xe61A9C7213a6Aa616C246a2B569e555B417b25ee` (implementation v3 `0x80aFE7B77F2dFD08e9feab7675780baC34a7EE85`), **upgradeable until sealed** (the processor factory must be sealed first). Client: web, desktop and mobile. Several rounds of internal review (contracts in five roles, client, desktop, protocol consistency, red team). **Not independently audited.** Specification TAP-10 v1.0 (English and Chinese).
 - Next: independent audit of the kernel and gateway; gateway domain and Public Suffix List; `@tapekit/kernel` on npm; site-owner handbook (publishing, activation, "100% on-chain" rules); kernel API reference and `.d.ts` types; open-source contract sources and the publishing CLI; desktop app registering `tape://`; `web3://` (ERC-4804 / ERC-6860) read-only adapter.
 
 ### Naming / 命名
