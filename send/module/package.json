@@ -1,0 +1,28 @@
+{
+  "name": "@tapekit/send",
+  "version": "0.1.0",
+  "description": "TapeSend (TAP-10): encrypted messages between TapeOut circuit containers, built on the TapeKit core.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "test/vectors.json"
+  ],
+  "scripts": {
+    "test": "node --test test/crypto.test.mjs test/vectors.test.mjs",
+    "test:mainnet": "node --test test/chain.mainnet.test.mjs",
+    "test:fork": "node --test test/hub.fork.test.mjs",
+    "vectors": "node test/make-vectors.mjs > test/vectors.json"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
