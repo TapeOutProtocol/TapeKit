@@ -1,8 +1,8 @@
 # @tapekit/send
 
-Reference implementation of [TAP-10](../../TAP-10.md) v1.0, the DeWEB messaging layer: keys, payloads, content and attachments, endpoint IDs, and strict chain reads. Built on the TapeKit identity core (`kernel/src/identity.js`) and kept separate from the tape:// page kernel on purpose: key handling never shares a package with code that renders other people's websites.
+Reference implementation of TAP-10, the DeWEB messaging layer: keys, payloads, content and attachments, endpoint IDs, and strict chain reads. Built on the TapeKit identity core (`kernel/src/identity.js`) and kept separate from the tape:// page kernel on purpose: key handling never shares a package with code that renders other people's websites.
 
-[TAP-10](../../TAP-10.zh.md) v1.0（DeWEB 消息层）的参考实现：公钥、载荷、内容与附件、端点号、多节点严格一致读链。建立在 TapeKit 核心的身份解析之上，并刻意与网页内核分开：私钥逻辑绝不和"运行陌生人的网页"放在同一个包里。
+TAP-10（DeWEB 消息层）的参考实现：公钥、载荷、内容与附件、端点号、多节点严格一致读链。建立在 TapeKit 核心的身份解析之上，并刻意与网页内核分开：私钥逻辑绝不和"运行陌生人的网页"放在同一个包里。
 
 ## Crypto and format / 加密与格式
 

@@ -8,12 +8,12 @@ TapeOut 电路容器之间的消息。`#4246@0` 这样的容器就是一个收�
 > - Live on BNB Smart Chain. Other chains (Base, X Layer) are planned but not active.
 > - The hub is **upgradeable until sealed**; it has not been sealed yet (see below).
 > - **Not independently audited.** All reviews so far were internal.
-> - The specification is [TAP-10.md](../TAP-10.md) v1.0 (English, normative; Chinese translation [TAP-10.zh.md](../TAP-10.zh.md)).
+> - The specification (TAP-10) is being rewritten as part of the DeWEB standard and will be published separately.
 >
 > - 已在 BNB Smart Chain 主网运行。其他链（Base、X Layer）在计划中，尚未启用。
 > - 中枢在**封印之前可以升级**，目前还没有封印（见下文）。
 > - **尚未经过独立审计**，目前的审查都是内部进行的。
-> - 规范是 [TAP-10.md](../TAP-10.md) v1.0（英文为正本），中文译本见 [TAP-10.zh.md](../TAP-10.zh.md)。
+> - 规范（TAP-10）正在作为 DeWEB 标准的一部分重写，之后单独发布。
 
 ## Deployment / 部署地址（BNB Smart Chain, chainId 56）
 
