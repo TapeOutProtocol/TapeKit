@@ -1,0 +1,19 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.28"
+evm_version = "shanghai"
+optimizer = true
+optimizer_runs = 10000
+# 字节码可复现：不带元数据哈希，同样的源码和参数在任何机器上编译出同一份字节码、CREATE2 得到同一个地址
+bytecode_hash = "none"
+cbor_metadata = false
+
+[profile.default.fuzz]
+runs = 2000
+
+[rpc_endpoints]
+bsc = "https://bsc-rpc.publicnode.com"
