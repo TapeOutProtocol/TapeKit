@@ -1,0 +1,17 @@
+{
+  "appId": "com.tapesend.app",
+  "appName": "TapeSend",
+  "webDir": "dist-native",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "capacitor"
+  },
+  "ios": {
+    "contentInset": "never",
+    "limitsNavigationsToAppBoundDomains": false
+  },
+  "android": {
+    "allowMixedContent": false,
+    "minWebViewVersion": 100
+  }
+}

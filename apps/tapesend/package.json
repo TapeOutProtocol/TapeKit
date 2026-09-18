@@ -1,0 +1,111 @@
+{
+  "name": "tapesend-client",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TapeSend official client: messages between circuit containers and the TapeKit browser, for web, macOS, Windows, Android and iOS.",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist-electron/main.mjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.mjs",
+    "electron": "npm run build && npm run build:electron && electron .",
+    "dist:mac": "npm run build && npm run build:electron && electron-builder --mac",
+    "dist:win": "npm run build && npm run build:electron && electron-builder --win",
+    "cap:sync": "npm run build:native && cap sync",
+    "ios": "npm run cap:sync && cap open ios",
+    "android": "npm run cap:sync && cap open android",
+    "electron:dev": "npm run build:electron && TAPESEND_DEV_URL=http://localhost:5190 electron .",
+    "build:electron": "node electron/build.mjs",
+    "build:native": "tsc --noEmit && TAPESEND_TARGET=native vite build --outDir dist-native"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/browser": "8.0.4",
+    "@capacitor/cli": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "@capacitor/ios": "8.5.2",
+    "@reown/appkit": "1.8.24",
+    "@reown/appkit-adapter-wagmi": "1.8.24",
+    "@tanstack/react-query": "5.103.1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "6.1.1",
+    "@wagmi/core": "3.6.5",
+    "electron": "44.4.1",
+    "electron-builder": "26.15.3",
+    "esbuild": "^0.28.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "typescript": "5.9.3",
+    "viem": "2.56.7",
+    "vite": "8.3.0",
+    "wagmi": "3.7.7"
+  },
+  "build": {
+    "appId": "com.tapesend.app",
+    "productName": "TapeSend",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.social-networking",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "protocols": [
+      {
+        "name": "TapeKit",
+        "schemes": [
+          "tape"
+        ]
+      }
+    ],
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "loadBrowserProcessSpecificV8Snapshot": false,
+      "grantFileProtocolExtraPrivileges": false,
+      "resetAdHocDarwinSignature": true
+    }
+  }
+}
