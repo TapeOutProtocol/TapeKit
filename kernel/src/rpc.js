@@ -58,7 +58,8 @@ export function createRpc(o) {
   const quorum = Math.max(1, Math.min(o.quorum ?? 2, urls.length));
   const timeoutMs = o.timeoutMs ?? 10_000;
   const hedgeMs = o.hedgeMs ?? 1_500;
-  const maxBatch = o.maxBatch ?? 40;
+  // BNB 官方公共节点（bsc-dataseed*）一包超过 30 多个 eth_call 就整包拒绝（"method eth_call in batch triggered rate limit"，2026-09-18 实测），留足余量
+  const maxBatch = o.maxBatch ?? 20;
   const fetchImpl = o.fetchImpl || globalThis.fetch.bind(globalThis);
   const retries = o.retries ?? 2;                 // 429 / 5xx / 网络错误时的重试次数（每次退避加倍，带抖动）
   const backoffMs = o.backoffMs ?? 400;
@@ -128,7 +129,16 @@ export function createRpc(o) {
       const src = reqs.slice(i, i + maxBatch);
       const part = src.map((q, k) => ({ jsonrpc: '2.0', id: i + k + 1, method: q.method, params: q.params }));
       let resp;
-      try { resp = await post(url, part); } catch (e) { for (let k = 0; k < part.length; k++) out.push({ err: String(e?.message || e) }); continue; }
+      // BNB 官方公共节点按秒限流整包请求：超限时返回一个 id 为 null 的 -32005 错误（"... in batch triggered rate limit"），
+      // 整包都没有结果。等一会儿整包重试，最多 3 次（2026-09-18 实测：连续几包就会触发）
+      for (let attempt = 0; ; attempt++) {
+        try { resp = await post(url, part); } catch (e) { resp = e; break; }
+        const limited = Array.isArray(resp) && resp.length < part.length && resp.some((x) => x && x.id === null && x.error && x.error.code === -32005);
+        if (!limited || attempt >= 3) break;
+        stats[url].rateLimited++;
+        await sleep(600 * 2 ** attempt * (0.7 + Math.random() * 0.6));
+      }
+      if (resp instanceof Error) { for (let k = 0; k < part.length; k++) out.push({ err: String(resp?.message || resp) }); continue; }
       if (!Array.isArray(resp)) { for (let k = 0; k < part.length; k++) out.push({ err: 'bad batch response' }); continue; }
       const byId = new Map(resp.filter((x) => x && typeof x === 'object').map((x) => [x.id, x]));
       for (const [k, q] of part.entries()) try {
