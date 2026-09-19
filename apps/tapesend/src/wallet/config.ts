@@ -1,10 +1,10 @@
 // 钱包连接。配置了 Reown projectId 时用 AppKit（扫码 / 手机钱包 / 浏览器插件都支持）；
 // 没配时退回只支持浏览器插件钱包，方便本地开发。
 import { createAppKit } from '@reown/appkit/react';
-import { bsc as appkitBsc } from '@reown/appkit/networks';
+import { bsc as appkitBsc, base as appkitBase, xLayer as appkitXLayer } from '@reown/appkit/networks';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { createConfig, http, type Config } from 'wagmi';
-import { bsc } from 'wagmi/chains';
+import { bsc, base, xLayer } from 'wagmi/chains';
 import { injected } from 'wagmi/connectors';
 import { platform, siteOrigin } from '../platform';
 
@@ -12,21 +12,29 @@ const projectId: string = import.meta.env.VITE_REOWN_PROJECT_ID ?? '';
 export const hasAppKit = projectId.length > 0;
 
 const rpcUrl = import.meta.env.VITE_BSC_RPC ?? 'https://bsc-dataseed.bnbchain.org';
+// 钱包连接库自己读回执、估 gas 用的节点（只是方便；消息和交易结果都另用多节点严格一致核对）
+const transports = {
+  [bsc.id]: http(rpcUrl),
+  [base.id]: http('https://mainnet.base.org'),
+  [xLayer.id]: http('https://rpc.xlayer.tech'),
+};
+/** 本客户端支持的链：BNB Chain、Base、X Layer。身份在哪条链上，就在哪条链上签交易 */
+export const WALLET_CHAINS = [bsc, base, xLayer] as const;
 
 let appKit: ReturnType<typeof createAppKit> | null = null;
 let config: Config;
 
 if (hasAppKit) {
   const adapter = new WagmiAdapter({
-    networks: [appkitBsc],
+    networks: [appkitBsc, appkitBase, appkitXLayer],
     projectId,
     ssr: false,
-    transports: { [bsc.id]: http(rpcUrl) },
+    transports,
   });
   const origin = siteOrigin();
   appKit = createAppKit({
     adapters: [adapter],
-    networks: [appkitBsc],
+    networks: [appkitBsc, appkitBase, appkitXLayer],
     defaultNetwork: appkitBsc,
     projectId,
     allowUnsupportedChain: false,
@@ -49,9 +57,9 @@ if (hasAppKit) {
   }
 } else {
   config = createConfig({
-    chains: [bsc],
+    chains: [bsc, base, xLayer],
     connectors: [injected({ shimDisconnect: true })],
-    transports: { [bsc.id]: http(rpcUrl) },
+    transports,
   });
 }
 

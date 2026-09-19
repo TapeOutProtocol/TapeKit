@@ -5,7 +5,12 @@ import {
 } from '../../../../send/module/src/index.js';
 import { encodeCall, decodeResult } from '../../../../kernel/src/abi.js';
 import { keccakHex } from '../../../../kernel/src/keccak.js';
-import { HUB_SEL, HUB_TOPIC, HOME_CHAIN_ID, chainById, createTapeSendChain, endpointLabel, endpointId, normalizeHeader, normalizeReceipt, parseEndpointId } from '../../../../send/module/src/chain.js';
+import {
+  HUB_SEL, HUB_TOPIC, HUB_MAINNET, HOME_CHAIN_ID, CHAINS, DEFAULT_CHAINS, chainById, chainIdOfInput, createTapeSendChains, endpointLabel, endpointId,
+  normalizeHeader, normalizeReceipt, parseEndpointId,
+} from '../../../../send/module/src/chain.js';
+import { networkByChainId } from '../../../../kernel/src/config.js';
+import { parseInput, formatShort } from '../../../../kernel/src/name.js';
 
 export type Hex = `0x${string}`;
 
@@ -60,6 +65,8 @@ export interface Message {
   copies?: number;
   /** 单个节点报的交易哈希，只是线索：用之前必须严格读回执核对（见 messageSender） */
   txHint?: Hex | null;
+  /** 读这页时没核对上这条链的中枢实现（节点报错）：消息照常显示，但附件不算已核对 */
+  chainUnchecked?: boolean;
 }
 
 export interface OpenedMessage {
@@ -82,46 +89,93 @@ export type Attachment =
   | { type: 'erc20'; chainId: number; token: Hex; amount: string; tx: Hex }
   | { type: 'erc721'; chainId: number; token: Hex; tokenId: string; tx: Hex };
 
-// 合约地址：构建时可用 VITE_TAPESEND_HUB 覆盖（代理地址取决于部署时的 owner）
-const chain = createTapeSendChain(import.meta.env.VITE_TAPESEND_HUB ? { hub: import.meta.env.VITE_TAPESEND_HUB } : {});
-export const hubAddress = chain.hub as Hex;
+// 每条已启用的链一个实例（BNB、Base、X Layer）：各自的节点、工厂、确认标签。中枢地址各链相同。
+// 构建时可用 VITE_TAPESEND_HUB 覆盖中枢地址（本地测试用）
+const chains = createTapeSendChains(import.meta.env.VITE_TAPESEND_HUB ? { hub: import.meta.env.VITE_TAPESEND_HUB } : {});
+type ChainApi = ReturnType<typeof createTapeSendChains> extends Map<number, infer C> ? C : never;
+/** 某条链的读写接口；本客户端没启用的链抛错（绝不拿别的链代替） */
+function chainOf(chainId: number): ChainApi {
+  const c = chains.get(Number(chainId));
+  if (!c) throw new TapeSendError('wrong-chain', `chain ${chainId} is not enabled in this client`);
+  return c;
+}
+/** 已启用的链号，BNB 在前 */
+export const activeChainIds: number[] = [...chains.keys()];
+export const isActiveChain = (chainId: number) => chains.has(Number(chainId));
+/** 这条链的读取钉在安全区块（目前没有这样的链：L2 也读最新块，只有"已确认"按安全区块）。保留给以后按链配置 */
+export const isSafeChain = (chainId: number) => String(chains.get(Number(chainId))?.network.pin) === 'safe';
+/**
+ * 界面上要不要给这条消息标"确认中"。L2（Base、X Layer）的消息上链就显示、不标确认中：消息只是查看，不涉及资产
+ * （用户定案）。内部的 pending 仍按安全区块算：资产附件的核对、首次引用记录都要等安全区块。
+ */
+export const showsPending = (m: { pending: boolean; chainId: number }) => m.pending && String(chains.get(Number(m.chainId))?.network.finality) !== 'safe';
+export const hubAddress = (chains.get(HOME_CHAIN_ID)?.hub ?? HUB_MAINNET) as Hex;
 const lower = (s: string) => s.toLowerCase();
+/** 链的原生币符号（BNB、ETH、OKB） */
+export const nativeSymbol = (chainId: number) => networkByChainId(chainId)?.currency ?? 'ETH';
+/** 区块浏览器 */
+export const explorerUrl = (chainId: number) => (chainId === 56 ? 'https://bscscan.com' : chainId === 8453 ? 'https://basescan.org' : chainId === 196 ? 'https://www.oklink.com/xlayer' : '');
+/** 本客户端要求所有端点读的收信链（所有已启用的链） */
+export const WANTED_CHAINS = DEFAULT_CHAINS as bigint;
 
 // ---------------------------------------------------------------- 解析
 
+/**
+ * 解析端点：按名字里的区号选链（#4246@0 → BNB，#1@2.344 → X Layer，#1@3.5 → Base），32 字节端点号按其中的链号，
+ * 容器地址按 BNB。已知端点在别的链上时一律传端点号（endpoint.endpoint），不要传容器地址。
+ * opts.block 只能是同一条链上读到的区块。
+ */
 export async function resolveEndpoint(input: string, opts: { block?: bigint } = {}): Promise<ResolveResult> {
-  const r = await chain.resolveEndpoint(input.trim(), opts.block !== undefined ? { block: '0x' + opts.block.toString(16) } : {});
+  const raw = input.trim();
+  const chainId = chainIdOfInput(raw) ?? HOME_CHAIN_ID;
+  if (!chains.has(chainId)) return { status: 'unsupported-chain' };
+  const c = chainOf(chainId);
+  // 32 字节端点号：链号已经取出来了，在那条链上按容器地址解析（解析结果的端点号必须等于输入，见下）
+  const ep = /^0x0{8}[0-9a-fA-F]{56}$/.test(raw) ? parseEndpointId(raw) : null;
+  const r = await c.resolveEndpoint(ep ? ep.container : raw, opts.block !== undefined ? { block: '0x' + opts.block.toString(16) } : {});
+  // 在那条链上解析出的容器必须就是端点号里的容器（链号由 c 保证），端点号因此也一致
+  if (ep && r.container !== undefined && lower(r.container) !== lower(ep.container)) return { status: 'not-tapeout' };
   if (r.status !== 'ok' && r.status !== 'not-opened') return { status: r.status };
   const endpoint = r as unknown as Endpoint;
-  return { status: r.status, endpoint: { ...endpoint, factory: stickyFactory(endpoint.factory, endpoint.block) } };
+  // 显示名用短写：BNB 4246.0，其他链 1.2.344（区号在中间），和地址栏、网站名字一致
+  const net = networkByChainId(endpoint.chainId);
+  if (!net) return { status: 'unsupported-chain' };
+  const label = formatShort(endpoint.tokenId, endpoint.cpu, net.area);
+  return { status: r.status, endpoint: { ...endpoint, label, factory: stickyFactory(endpoint.factory, endpoint.block, endpoint.chainId) } };
 }
 
 export { endpointLabel };
 
 /**
- * 反查显示名。传端点号（32 字节）或本链容器地址。内核按地址反查时会重新推算容器地址并比对；失败显示地址，且不缓存失败。
- * 端点在其他链上时，本客户端还不能在那条链上反查（那条链尚未启用），显示缩写地址加链名。
+ * 反查显示名。传端点号（32 字节）或 BNB 容器地址。在端点所在的链上反查，内核会重新推算容器地址并比对；
+ * 失败显示地址，且不缓存失败。端点在本客户端没启用的链上时，显示缩写地址加链名。
  */
 const labelCache = new Map<string, Promise<string>>();
 export function senderLabel(endpointOrContainer: string): Promise<string> {
   const parsed = /^0x[0-9a-fA-F]{64}$/.test(endpointOrContainer) ? parseEndpointId(endpointOrContainer) : { chainId: HOME_CHAIN_ID, container: lower(endpointOrContainer) };
   if (!parsed) return Promise.resolve(short(endpointOrContainer));
   const key = lower(parsed.container);
-  if (parsed.chainId !== chain.chainId) {
+  if (!chains.has(parsed.chainId)) {
     const c = chainById(parsed.chainId);
     return Promise.resolve(`${short(key)}.${c ? c.short : `chain${parsed.chainId}`}`);
   }
-  let p = labelCache.get(key);
+  const cacheKey = `${parsed.chainId}:${key}`;
+  let p = labelCache.get(cacheKey);
   if (!p) {
-    p = chain.resolveEndpoint(key).then((r: { status: string; tokenId?: bigint; cpu?: bigint; container?: string }) => {
+    // 容器地址在端点所在的那条链上反查（容器地址本身带链号，别的链上查不到）
+    p = chainOf(parsed.chainId).resolveEndpoint(key).then((r: { status: string; tokenId?: bigint; cpu?: bigint; container?: string }) => {
       if (r.tokenId === undefined || r.cpu === undefined || !r.container || lower(r.container) !== key) throw new Error('unresolved');
-      return endpointLabel(r.tokenId, r.cpu, parsed.chainId);
+      const net = networkByChainId(parsed.chainId);
+      if (!net) throw new Error('unknown chain');   // 不认识的链不退回成 BNB 写法（会指向 BNB 上毫不相干的电路）
+      return withChain(formatShort(r.tokenId, r.cpu, net.area), parsed.chainId);
     });
-    labelCache.set(key, p);
-    p.catch(() => labelCache.delete(key));
+    labelCache.set(cacheKey, p);
+    p.catch(() => labelCache.delete(cacheKey));
   }
   return p.catch(() => short(key));
 }
+/** 显示名后面标出所在链：BNB 不标，其他链标"· X Layer"、"· Base"（区号只差一个点的名字很容易看混） */
+export const withChain = (label: string, chainId: number) => (Number(chainId) === HOME_CHAIN_ID ? label : `${label} · ${chainName(chainId)}`);
 /** 链的显示名 */
 export const chainName = (id: number) => chainById(id)?.name ?? `chain ${id}`;
 export const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
@@ -132,12 +186,29 @@ const idsKey = (wallet: string) => `tapesend:identities:${lower(wallet)}`;
 export function savedIdentities(wallet: string): string[] {
   try {
     const v = JSON.parse(localStorage.getItem(idsKey(wallet)) ?? '[]');
-    return Array.isArray(v) ? v.filter((x) => typeof x === 'string' && /^#\d+@\d+$/.test(x)).slice(0, 20) : [];
+    // 旧版存的是 #4246@0，统一换成短写 4246.0；看不懂的丢掉
+    const out: string[] = [];
+    for (const x of Array.isArray(v) ? v : []) {
+      const s = shortName(x);
+      if (s && !out.includes(s)) out.push(s);
+    }
+    return out.slice(0, 20);
   } catch {
     return [];
   }
 }
-export function rememberIdentity(wallet: string, label: string) {
+/** 任意写法（#1@2.344、1.2.344、1.2.344.tape）→ 短写 1.2.344；不是名字返回 null */
+export function shortName(x: unknown): string | null {
+  if (typeof x !== 'string') return null;
+  try {
+    const p = parseInput(x);
+    return p.kind === 'name' && !p.path ? formatShort(p.tokenId, p.cpu, p.area) : null;
+  } catch {
+    return null;
+  }
+}
+export function rememberIdentity(wallet: string, rawLabel: string) {
+  const label = shortName(rawLabel) ?? rawLabel;
   try {
     const list = [label, ...savedIdentities(wallet).filter((x) => x !== label)].slice(0, 20);
     localStorage.setItem(idsKey(wallet), JSON.stringify(list));
@@ -257,12 +328,27 @@ export async function unlock(me: Endpoint, wallet: Hex, sign: SignFn, opts: { ro
   return { status: 'unlocked', needsPublish, publicKey, keyIndex };
 }
 
+/** 发布公钥：收信链位图 = 本客户端启用的所有链（每条链上的来信都会读） */
 export function publishKeyTx(me: Endpoint, keyIndex: number, publicKey: Hex) {
-  return chain.encodePublishKey({ circuits: me.circuits, tokenId: me.tokenId, keyIndex, publicKey }) as { to: Hex; data: Hex };
+  return chainOf(me.chainId).encodePublishKey({ circuits: me.circuits, tokenId: me.tokenId, keyIndex, publicKey, chains: WANTED_CHAINS }) as { to: Hex; data: Hex };
 }
 
 export function revokeKeyTx(me: Endpoint) {
-  return chain.encodeRevokeKey({ circuits: me.circuits, tokenId: me.tokenId }) as { to: Hex; data: Hex };
+  return chainOf(me.chainId).encodeRevokeKey({ circuits: me.circuits, tokenId: me.tokenId }) as { to: Hex; data: Hex };
+}
+
+/**
+ * 本钱包在这个容器上的公钥还没声明读所有已启用的链（老用户只声明了 BNB）：别的链上的人给他发加密消息会被拒绝。
+ * 用同一把公钥、同一序号重新发布一次、把位图补全即可，不用重新签钥匙文字。
+ */
+export function needsChainsUpdate(me: Endpoint, wallet: string): boolean {
+  if (!me.key.usable || lower(me.key.current) !== lower(wallet)) return false;
+  return (BigInt(me.key.chainsBits ?? 0n) & WANTED_CHAINS) !== WANTED_CHAINS;
+}
+/** 补全收信链：公钥、序号不变，位图 = 原位图 ∪ 所有已启用的链（保留本客户端不认识的位，那是别的客户端声明的） */
+export function updateChainsTx(me: Endpoint) {
+  const bits = BigInt(me.key.chainsBits ?? 0n) | WANTED_CHAINS;
+  return chainOf(me.chainId).encodePublishKey({ circuits: me.circuits, tokenId: me.tokenId, keyIndex: me.key.keyIndex, publicKey: me.key.key, chains: bits }) as { to: Hex; data: Hex };
 }
 
 // ---------------------------------------------------------------- 读消息
@@ -273,7 +359,7 @@ const FETCH_CONCURRENCY = 6;
  * 已取回、并已按链上指纹核对过的消息内容。链上内容不可变，按"消息 ID + 指纹"缓存：
  * 轮询发现新消息重新加载时，老消息不必再下载，别人刷垃圾消息也只会让客户端取新增的那几条。
  */
-/** 读不到已最终确认高度时的保守回退：BNB 链快速最终性约 2 个块，这里放宽到 30 个块 */
+/** 读不到已确认高度时的保守回退（只用于 BNB：快速最终性约 2 个块，这里放宽到 30 个块）。L2 读不到时一律当确认中 */
 const FINALITY_FALLBACK_BLOCKS = 30n;
 const payloadCache = new Map<string, { payload: Uint8Array; ref: string; txHint?: string | null }>();
 const PAYLOAD_CACHE_MAX = 600;
@@ -288,28 +374,88 @@ export interface MessagePage {
   unavailable: number;
   /** 继续取更早的消息；没有了为 null。cursor 是信箱序号 */
   more: MoreToken | null;
+  /** 这一页读过的各条链的安全状态：中枢或工厂没封印的链要提示；中枢实现不在认可名单里的链，它的消息已丢弃 */
+  chainStatus?: ChainSafety[];
 }
-export interface MoreToken { cursor: string | null; rest: unknown[]; usedCursors?: string[] }
+/** checked=false：这次没读到这条链的状态（节点报错、限流），它的消息照常显示但不算"已核对"，界面要提示 */
+export interface ChainSafety { chainId: number; checked: boolean; hubExpected: boolean; hubSealed: boolean; factorySealed: boolean; circuitsIntact: boolean }
+
+/**
+ * 各链中枢与工厂的状态（TAP-10 §3.5、§3.6，设计文档 §7：任何一条链没封印，来自那条链的消息都要带警告）。
+ * 多节点严格读，按链缓存 60 秒；读不到返回 null（那条链的消息照常显示，但不算"已核对"）。
+ */
+const safetyCache = new Map<number, { at: number; v: ChainSafety }>();
+export async function chainSafety(chainId: number, block?: string): Promise<ChainSafety> {
+  const hit = safetyCache.get(chainId);
+  if (hit && Date.now() - hit.at < 60_000) return hit.v;
+  const unchecked: ChainSafety = { chainId, checked: false, hubExpected: true, hubSealed: false, factorySealed: false, circuitsIntact: true };
+  try {
+    const c = chainOf(chainId);
+    const b = block ?? (await c.rpc.pinBlock());
+    // 中枢和工厂分开读：工厂读失败不能连累中枢核对
+    const [hub, factory] = await Promise.allSettled([c.hubStatus(b), c.factoryStatus(b)]);
+    // 中枢或工厂任一读不到：没核对上，不缓存，下次再读
+    if (hub.status !== 'fulfilled' || factory.status !== 'fulfilled') return unchecked;
+    const v: ChainSafety = {
+      chainId, checked: true, hubExpected: Boolean(hub.value.expectedImplementation), hubSealed: Boolean(hub.value.inEffect),
+      factorySealed: Boolean(factory.value.inEffect), circuitsIntact: Boolean(factory.value.circuitsIntact),
+    };
+    safetyCache.set(chainId, { at: Date.now(), v });
+    return v;
+  } catch {
+    return unchecked;
+  }
+}
+/** 继续往前翻：每条链各自的信箱游标（null = 这条链已经翻到头） */
+export interface MoreToken { cursors: Record<number, string | null> }
 
 /**
  * 取一页消息（DeWEB 链上信箱）：
  *   - 列表来自中枢合约的存储（inbox / outbox），多节点严格一致读取：发件人、区块、时间、内容指纹都由链上决定；
  *   - 每条的内容从任意节点取回，必须与链上指纹一致（keccak256(ref ‖ keccak256(payload))），对不上就换节点；
  *   - 已静音的发件人不下载内容。
- * 目前只读本链（BNB）。其他链启用后，按收信链逐条链读取再合并。
+ * 收件：发给我的消息存在发件人那条链的中枢里，所以每条已启用的链都读（各链各一页，合并后按时间排）；
+ * 发件：只在我自己这条链上。
  */
 /** 每页里，每个陌生发件人（从没给他发过信）最多取回几条内容：刷信箱的人再多发，也只多花对方几次读取 */
 export const STRANGER_PER_PAGE = 3;
 export async function listMessages(me: Endpoint, direction: 'in' | 'out', opts: { more?: MoreToken; muted?: Set<string>; contacts?: Set<string>; showAll?: boolean } = {}): Promise<MessagePage> {
   const muted = opts.muted ?? new Set<string>();
-  const before = opts.more?.cursor ?? undefined;
-  const page = direction === 'in'
-    ? await chain.inbox(me.endpoint, { before, limit: PAGE_SIZE })
-    : await chain.outbox(me.container, { before, limit: PAGE_SIZE });
+  // 这一页要读哪些链：收件是所有已启用的链，发件只有自己那条；翻页时只读还没翻到头的
+  const ids = direction === 'in' ? activeChainIds : [me.chainId];
+  const todo = opts.more ? ids.filter((id) => typeof opts.more!.cursors[id] === 'string') : ids;
+  type Entry = { id: string; chainId: number; index: number; to: string; from: string; fromEndpoint: string; blockNumber: number; timestamp: number; digest: string };
+  type Page = { chainId: number; items: Entry[]; next: string | null; block: string };
+  // 一条链读不到不拖垮其他链：记下来，这条链的游标保持不变（下次重试）
+  const pages: Page[] = [];
+  let failedChains = 0;
+  await Promise.all(todo.map(async (id) => {
+    const c = chainOf(id);
+    // 'start'：这条链上次第一页就没读到，从最新的开始读
+    const cur = opts.more?.cursors[id];
+    const before = cur === 'start' || cur === null ? undefined : cur;
+    try {
+      const page = direction === 'in' ? await c.inbox(me.endpoint, { before, limit: PAGE_SIZE }) : await c.outbox(me.container, { before, limit: PAGE_SIZE });
+      pages.push({ chainId: id, items: page.items as Entry[], next: page.next, block: page.block });
+    } catch (e) {
+      // 自己那条链读不到时整页报错（和以前一样）；别的链读不到只少那条链的来信
+      if (id === me.chainId) throw e;
+      failedChains += 1;
+    }
+  }));
   let dropped = 0;
   let unavailable = 0;
-  type Entry = { id: string; chainId: number; index: number; to: string; from: string; fromEndpoint: string; blockNumber: number; timestamp: number; digest: string };
-  const wanted = (page.items as Entry[]).filter((e) => {
+  // 每条读到的链先核对它的中枢实现：不在认可名单里（owner 换成了没核对过的版本，可能伪造来信），这条链的消息全部丢弃
+  const chainStatus = await Promise.all(pages.map((pg) => chainSafety(pg.chainId, pg.block)));
+  const uncheckedChains = new Set(chainStatus.filter((x) => !x.checked).map((x) => x.chainId));
+  for (const st of chainStatus) {
+    if (st.hubExpected && st.circuitsIntact) continue;
+    const pg = pages.find((p) => p.chainId === st.chainId);
+    if (pg) { dropped += pg.items.length; pg.items = []; }
+  }
+  // 从新到旧：各链的条目合在一起按时间排（陌生人限量按这个顺序保留每人最新的几条）
+  const all = pages.flatMap((pg) => pg.items).sort((a, b) => b.timestamp - a.timestamp || b.chainId - a.chainId || b.blockNumber - a.blockNumber || b.index - a.index);
+  const wanted = all.filter((e) => {
     // 信箱里的条目属于谁由合约存储决定；这里再核对一次，防止模块出错把别人的条目混进来
     const mine = direction === 'in' ? lower(e.to) === lower(me.endpoint) : lower(e.from) === lower(me.container);
     if (!mine) { dropped += 1; return false; }
@@ -320,7 +466,7 @@ export async function listMessages(me: Endpoint, direction: 'in' | 'out', opts: 
   if (direction === 'in' && !opts.showAll) {
     const contacts = opts.contacts ?? new Set<string>();
     const seen = new Map<string, number>();
-    // page.items 是从新到旧：按这个顺序计数，保留的就是每人最新的几条
+    // all 是从新到旧：按这个顺序计数，保留的就是每人最新的几条
     const keep: Entry[] = [];
     for (const e of wanted) {
       const from = lower(e.from);
@@ -332,12 +478,18 @@ export async function listMessages(me: Endpoint, direction: 'in' | 'out', opts: 
     }
     wanted.splice(0, wanted.length, ...keep);
   }
-  // 已最终确认的区块高度：之后的消息标"确认中"（链重组时可能消失或换序号）。
-  // 读不到时退回用链上高度：钉住的区块往前 FINALITY_FALLBACK_BLOCKS 个块以内的都算确认中（不依赖本机时钟）
-  const fin: bigint | null = wanted.length ? await chain.finalizedBlock().catch(() => null) : null;
-  let pinned: bigint | null = null;
-  try { pinned = page.block !== undefined && page.block !== null ? BigInt(page.block) : null; } catch { pinned = null; }
-  const pendingFrom = fin !== null ? fin : pinned !== null ? pinned - FINALITY_FALLBACK_BLOCKS : null;
+  // 各链的已确认高度（BNB finalized，L2 safe）：之后的消息内部标"确认中"（链重组时可能消失或换序号）。
+  // 读不到时：BNB 退回用"钉住的区块往前 FINALITY_FALLBACK_BLOCKS 块"（finalized 只比最新块晚两三块）；
+  // L2 读取钉在最新块、安全区块却落后几分钟（X Layer 实测约 200 块），没有安全的回退值，一律当"确认中"
+  // （资产附件因此不会在安全区块之前被核对）
+  const pendingFrom = new Map<number, bigint | null>();
+  await Promise.all(pages.filter((pg) => wanted.some((e) => e.chainId === pg.chainId)).map(async (pg) => {
+    const fin: bigint | null = await chainOf(pg.chainId).finalizedBlock().catch(() => null);
+    let pinned: bigint | null = null;
+    try { pinned = pg.block !== undefined && pg.block !== null ? BigInt(pg.block) : null; } catch { pinned = null; }
+    const safeFinality = String(chainOf(pg.chainId).network.finality) === 'safe';
+    pendingFrom.set(pg.chainId, fin !== null ? fin : !safeFinality && pinned !== null ? pinned - FINALITY_FALLBACK_BLOCKS : null);
+  }));
   const results: Array<Message | null> = new Array(wanted.length).fill(null);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, wanted.length) }, async () => {
@@ -349,7 +501,7 @@ export async function listMessages(me: Endpoint, direction: 'in' | 'out', opts: 
         const cacheKey = `${e.id}:${lower(e.digest)}`;
         let got = payloadCache.get(cacheKey);
         if (!got) {
-          got = await chain.fetchMessage(e) as { payload: Uint8Array; ref: string; txHint?: string | null };
+          got = await chainOf(e.chainId).fetchMessage(e) as { payload: Uint8Array; ref: string; txHint?: string | null };
           // 没带交易线索的不缓存：下次加载换节点重取（单个节点省略线索就能让附件一直核对不了）
           if (got.txHint) payloadCache.set(cacheKey, got);
           if (payloadCache.size > PAYLOAD_CACHE_MAX) payloadCache.delete(payloadCache.keys().next().value!);
@@ -361,7 +513,8 @@ export async function listMessages(me: Endpoint, direction: 'in' | 'out', opts: 
           to: lower(toParsed.container) as Hex, toEndpoint: lower(e.to) as Hex, from: lower(e.from) as Hex, fromEndpoint: lower(e.fromEndpoint) as Hex,
           ref: lower(got.ref) as Hex, digest: lower(e.digest) as Hex, payload: got.payload, direction,
           // 两样都读不到（极少见）：一律标确认中，自动重试会再读
-          pending: pendingFrom !== null ? BigInt(e.blockNumber) > pendingFrom : true,
+          pending: (() => { const f = pendingFrom.get(e.chainId); return f !== null && f !== undefined ? BigInt(e.blockNumber) > f : true; })(),
+          chainUnchecked: uncheckedChains.has(e.chainId) || undefined,
           txHint: got.txHint ? (lower(got.txHint) as Hex) : null,
         };
       } catch {
@@ -371,20 +524,34 @@ export async function listMessages(me: Endpoint, direction: 'in' | 'out', opts: 
   }));
   const items = results.filter((m): m is Message => m !== null);
   items.sort((a, b) => b.timestamp - a.timestamp || b.chainId - a.chainId || b.blockNumber - a.blockNumber || b.index - a.index);
-  return { items, dropped, unavailable, folded, more: page.next ? { cursor: page.next, rest: [] } : null };
+  // 游标：读到的链用新游标；读失败的链保留原游标（下次再试）；这次没读的链沿用原来的
+  const cursors: Record<number, string | null> = {};
+  for (const id of ids) cursors[id] = opts.more ? (opts.more.cursors[id] ?? null) : null;
+  // 读失败的链：保留原游标；第一页就失败的记成 'start'，下次「加载更多」时从最新的开始补读，不会被当成已经翻到头
+  for (const id of todo) if (!pages.some((pg) => pg.chainId === id)) cursors[id] = opts.more?.cursors[id] ?? 'start';
+  for (const pg of pages) cursors[pg.chainId] = pg.next;
+  // 读失败的链算进"暂时取不到"：界面会提示并稍后整页重读
+  unavailable += failedChains;
+  const more = Object.values(cursors).some((c) => typeof c === 'string') ? { cursors } : null;
+  return { items, dropped, unavailable, folded, more, chainStatus };
 }
 
 /**
- * 两个信箱的消息总数：只用来"探测有没有新消息"，数字变了才去做完整加载（完整加载仍是多节点严格一致核对）。
- * 所以这里用普通一致规则、一包两个 eth_call，很轻，可以几秒查一次。
+ * 各链收件信箱和自己发件信箱的消息总数：只用来"探测有没有新消息"，数字变了才去做完整加载（完整加载仍是多节点严格一致核对）。
+ * 所以这里用普通一致规则，很轻，可以几秒查一次。读最新块；完整加载钉在往回 2 块，
+ * 所以计数变了之后界面会隔几秒再加载一次（见 MessagesView），刚上链的那条不会漏。
  */
 export async function boxCounts(me: Endpoint): Promise<string> {
-  const [a, b] = await chain.rpc.many([
-    { method: 'eth_call', params: [{ to: chain.hub, data: encodeCall(HUB_SEL.inboxCount, ['bytes32'], [me.endpoint]) }, 'latest'] },
-    { method: 'eth_call', params: [{ to: chain.hub, data: encodeCall(HUB_SEL.outboxCount, ['address'], [me.container]) }, 'latest'] },
-  ]);
-  if (!a?.ok || !b?.ok) return '';
-  return `${BigInt(a.value)}:${BigInt(b.value)}`;
+  const parts = await Promise.all(activeChainIds.map(async (id) => {
+    const c = chainOf(id);
+    const tag = String(c.network.pin) === 'safe' ? 'safe' : 'latest';
+    const reqs = [{ method: 'eth_call', params: [{ to: c.hub, data: encodeCall(HUB_SEL.inboxCount, ['bytes32'], [me.endpoint]) }, tag] }];
+    if (id === me.chainId) reqs.push({ method: 'eth_call', params: [{ to: c.hub, data: encodeCall(HUB_SEL.outboxCount, ['address'], [me.container]) }, tag] });
+    const r = await c.rpc.many(reqs).catch(() => null);
+    if (!r || r.some((x: { ok?: boolean }) => !x?.ok)) return `${id}:?`;
+    return `${id}:${r.map((x: { value: string }) => BigInt(x.value)).join(':')}`;
+  }));
+  return parts.join('|');
 }
 
 /**
@@ -447,13 +614,13 @@ export function endpointContainer(endpoint: string): Hex | null {
   const p = parseEndpointId(endpoint);
   return p ? (lower(p.container) as Hex) : null;
 }
-/** 端点是否在本客户端已启用的链上（其他链暂时不能回复） */
-export const isHomeEndpoint = (endpoint: string) => parseEndpointId(endpoint)?.chainId === chain.chainId;
+/** 端点是否在本客户端已启用的链上（没启用的链不能回复） */
+export const isHomeEndpoint = (endpoint: string) => { const p = parseEndpointId(endpoint); return Boolean(p && chains.has(p.chainId)); };
 
 export type TxOutcome = { status: 'success'; blockNumber: bigint; hash: Hex } | { status: 'reverted' | 'replaced' | 'unknown'; hash: Hex };
 
 /** 交易结果里必须看到的 hub 日志：topic0，以及可选的 topic1（容器） */
-export interface ExpectedLog { topic0: string; container: string; /** Sent 的 topic2：发件容器 */ from?: string; /** 发交易的钱包：用来核对替换交易 */ wallet?: string; /** 发出后立刻读到的 nonce */ nonce?: number; /** 本次交易的调用数据：替换交易必须和它完全相同才算送达 */ data?: string }
+export interface ExpectedLog { /** 交易所在的链（发件人那条链） */ chainId: number; topic0: string; container: string; /** Sent 的 topic2：发件容器 */ from?: string; /** 发交易的钱包：用来核对替换交易 */ wallet?: string; /** 发出后立刻读到的 nonce */ nonce?: number; /** 本次交易的调用数据：替换交易必须和它完全相同才算送达 */ data?: string }
 
 /**
  * 等交易结果：
@@ -480,17 +647,17 @@ export async function confirmTx(
     // 替换哈希就是原哈希本身，说明是伪造；先多节点看原交易是不是其实成功了；
     // 再核对替换交易确实是本钱包、同一个 nonce 发出的（nonce 用发出时记下的，被替换后节点已读不到原交易），否则一律"结果不明"
     if (lower(rep.hash) === lower(hash)) return { status: 'unknown', hash };
-    const originalState = await strictReceiptState(lower(hash) as Hex);
+    const originalState = await strictReceiptState(lower(hash) as Hex, expected.chainId);
     if (originalState !== 'none' && originalState !== 'error') return judge(originalState, lower(hash) as Hex, expected);
-    const origin = expected.nonce !== undefined && expected.wallet ? { from: lower(expected.wallet), nonce: expected.nonce, input: '' } : await strictTxOrigin(hash);
-    const replacementOrigin = await strictTxOrigin(rep.hash);
+    const origin = expected.nonce !== undefined && expected.wallet ? { from: lower(expected.wallet), nonce: expected.nonce, input: '' } : await strictTxOrigin(hash, expected.chainId);
+    const replacementOrigin = await strictTxOrigin(rep.hash, expected.chainId);
     const genuine = Boolean(origin && replacementOrigin && origin.from === replacementOrigin.from && origin.nonce === replacementOrigin.nonce && (!expected.wallet || origin.from === lower(expected.wallet)));
     if (!genuine) return { status: 'unknown', hash };
     // 替换交易的调用数据和本次完全相同，才是"同一条消息加速送达"；不同就是别的交易占了这个 nonce（本条没有上链）
     const sameCall = Boolean(expected.data && replacementOrigin && replacementOrigin.input === lower(expected.data));
     if (rep.reason !== 'repriced') {
       // 判"已替换"必须所有节点一致回答原交易没有回执，并且替换交易确实上链了
-      const replacement = await strictReceiptLogs(lower(rep.hash) as Hex).catch(() => null);
+      const replacement = await strictReceiptLogs(lower(rep.hash) as Hex, expected.chainId).catch(() => null);
       if (!replacement || originalState !== 'none') return { status: 'unknown', hash };
       // 替换原因也是那一个节点算出来的：替换交易里有对应的消息日志，就是加速送达了，不是"没有生效"
       const judged = judge(replacement, lower(rep.hash) as Hex, expected);
@@ -500,12 +667,12 @@ export async function confirmTx(
   }
   const finalHash = lower(rep ? rep.hash : hash) as Hex;
   if (rep && expected.data) {
-    const again = await strictTxOrigin(finalHash).catch(() => null);
+    const again = await strictTxOrigin(finalHash, expected.chainId).catch(() => null);
     if (!again || again.input !== lower(expected.data)) return { status: 'unknown', hash };
   }
   if (!rep && receipt && lower(receipt.transactionHash) !== lower(hash)) return { status: 'unknown', hash };
   for (let i = 0; i < 6; i++) {
-    const strict = await strictReceiptLogs(finalHash).catch(() => null);
+    const strict = await strictReceiptLogs(finalHash, expected.chainId).catch(() => null);
     if (strict) return judge(strict, finalHash, expected);
     if (i < 5) await new Promise((r) => setTimeout(r, 2000 * 2 ** Math.min(i, 3)));
   }
@@ -516,7 +683,8 @@ export async function confirmTx(
 function judge(strict: { status: 'success' | 'reverted'; blockNumber: bigint; logs: StrictLog[] }, hash: Hex, expected: ExpectedLog): TxOutcome {
   if (strict.status !== 'success') return { status: 'reverted', hash };
   const word = (a: string) => '0x' + lower(a).slice(2).padStart(64, '0');
-  const hasLog = strict.logs.some((l) => lower(l.address) === hubAddress.toLowerCase() && lower(l.topics[0] ?? '') === expected.topic0
+  const hub = chains.get(expected.chainId)?.hub ?? hubAddress;
+  const hasLog = strict.logs.some((l) => lower(l.address) === lower(hub) && lower(l.topics[0] ?? '') === expected.topic0
     && lower(l.topics[1] ?? '') === word(expected.container) && (!expected.from || lower(l.topics[2] ?? '') === word(expected.from)));
   return hasLog ? { status: 'success', blockNumber: strict.blockNumber, hash } : { status: 'unknown', hash };
 }
@@ -525,13 +693,13 @@ export const HUB_TOPICS = HUB_TOPIC as { Sent: string; KeyPublished: string; Key
 interface StrictLog { address: string; topics: string[]; data: string; logIndex: number }
 type StrictReceipt = { status: 'success' | 'reverted'; blockNumber: bigint; logs: StrictLog[] };
 /** 多节点严格一致读取回执（TAP-10 §8.3 第 1 步的读法），带日志。没读到一致答案（出错、分歧）返回 null */
-async function strictReceiptLogs(hash: Hex): Promise<StrictReceipt | null> {
-  const r = await strictReceiptState(hash);
+async function strictReceiptLogs(hash: Hex, chainId: number): Promise<StrictReceipt | null> {
+  const r = await strictReceiptState(hash, chainId);
   return r === 'none' || r === 'error' ? null : r;
 }
 /** 同上，但区分"所有节点一致回答没有回执"（none）和"没读到一致答案"（error）：只有 none 才能当作"没有上链" */
-async function strictReceiptState(hash: Hex): Promise<StrictReceipt | 'none' | 'error'> {
-  const [a] = await chain.rpc.many([{ method: 'eth_getTransactionReceipt', params: [hash], normalize: normalizeReceipt }], { all: true }).catch(() => [{ ok: false }]);
+async function strictReceiptState(hash: Hex, chainId: number): Promise<StrictReceipt | 'none' | 'error'> {
+  const [a] = await chainOf(chainId).rpc.many([{ method: 'eth_getTransactionReceipt', params: [hash], normalize: normalizeReceipt }], { all: true }).catch(() => [{ ok: false }]);
   if (!a || !a.ok) return 'error';
   if (a.raw === null) return 'none';
   if (!a.raw) return 'error';
@@ -542,8 +710,8 @@ async function strictReceiptState(hash: Hex): Promise<StrictReceipt | 'none' | '
 }
 
 /** 多节点严格一致读取一笔交易的发送方和 nonce（交易池里或已上链的都能读到）；读不到一致答案返回 null */
-async function strictTxOrigin(hash: Hex): Promise<{ from: string; nonce: number; input: string } | null> {
-  const [a] = await chain.rpc.many([{
+async function strictTxOrigin(hash: Hex, chainId: number): Promise<{ from: string; nonce: number; input: string } | null> {
+  const [a] = await chainOf(chainId).rpc.many([{
     method: 'eth_getTransactionByHash', params: [lower(hash)],
     normalize: (v: { from?: string; nonce?: string; input?: string } | null) => (v && typeof v.from === 'string' && typeof v.nonce === 'string' ? { from: lower(v.from), nonce: v.nonce, input: lower(String(v.input ?? '')) } : null),
   }], { all: true }).catch(() => [{ ok: false }]);
@@ -605,10 +773,10 @@ export function recordSend(container: string, wallet: string, hash: Hex, extra: 
   return ok && unknownSends(container, wallet).some((x) => lower(x.hash) === lower(hash));
 }
 /** 刚发出的交易还在交易池里，多节点一致读到它的 nonce 就记下（被替换后节点就读不到了） */
-export async function noteSendNonce(container: string, wallet: string, hash: Hex, tries = 4): Promise<number | undefined> {
+export async function noteSendNonce(container: string, wallet: string, hash: Hex, chainId: number, tries = 4): Promise<number | undefined> {
   // 刚广播时各节点交易池还不同步，严格读取常常读不到一致答案：退避重试几次
   for (let i = 0; i < tries; i++) {
-    const origin = await strictTxOrigin(hash).catch(() => null);
+    const origin = await strictTxOrigin(hash, chainId).catch(() => null);
     if (origin && origin.from === lower(wallet)) {
       updateSends(container, wallet, (list) => list.map((x) => (lower(x.hash) === lower(hash) ? { ...x, nonce: origin.nonce } : x)));
       return origin.nonce;
@@ -622,8 +790,8 @@ export function forgetSend(container: string, wallet: string, hash?: Hex) {
 }
 
 /** 多节点一致读取账户已确认的交易数（nonce） */
-async function confirmedNonce(wallet: string): Promise<number | null> {
-  const [a] = await chain.rpc.many([{ method: 'eth_getTransactionCount', params: [lower(wallet), 'latest'] }], { all: true }).catch(() => [{ ok: false }]);
+async function confirmedNonce(wallet: string, chainId: number): Promise<number | null> {
+  const [a] = await chainOf(chainId).rpc.many([{ method: 'eth_getTransactionCount', params: [lower(wallet), 'latest'] }], { all: true }).catch(() => [{ ok: false }]);
   if (!a || !a.ok || typeof a.value !== 'string') return null;
   const n = Number(BigInt(a.value));
   return Number.isSafeInteger(n) ? n : null;
@@ -636,7 +804,7 @@ async function confirmedNonce(wallet: string): Promise<number | null> {
  *     只提示，不移出：可能是被加速替换、消息已经送达，要用户去"已发送"核对后手动放行；
  *   - 其余保持不变。
  */
-export async function recheckUnknownSends(container: string, wallet: string): Promise<{ left: PendingSend[]; landed: Hex[]; landedTo: string[]; reverted: Hex[]; gone: Hex[] }> {
+export async function recheckUnknownSends(container: string, wallet: string, chainId: number): Promise<{ left: PendingSend[]; landed: Hex[]; landedTo: string[]; reverted: Hex[]; gone: Hex[] }> {
   const landed: Hex[] = [];
   const landedTo: string[] = [];
   const reverted: Hex[] = [];
@@ -645,15 +813,15 @@ export async function recheckUnknownSends(container: string, wallet: string): Pr
   let count: number | null | undefined;
   for (const x of list) {
     // 先读 nonce、再读回执：避免"读回执时还没上链、读计数时刚上链"被误判为永远不会上链。nonce 优先用发出时记下的
-    const read = x.nonce === undefined ? await strictTxOrigin(x.hash).catch(() => null) : null;
+    const read = x.nonce === undefined ? await strictTxOrigin(x.hash, chainId).catch(() => null) : null;
     const nonce = x.nonce ?? (read && read.from === lower(wallet) ? read.nonce : undefined);
-    if (nonce !== undefined && count === undefined) count = await confirmedNonce(wallet).catch(() => null);
-    const state = await strictReceiptState(lower(x.hash) as Hex);
+    if (nonce !== undefined && count === undefined) count = await confirmedNonce(wallet, chainId).catch(() => null);
+    const state = await strictReceiptState(lower(x.hash) as Hex, chainId);
     if (state !== 'none' && state !== 'error') {
       // 回执成功还要有对应的 Sent 日志才算"已发出"
       // x.to 是收件端点号；旧版记录存的是容器地址，按本链端点号换算
       const toEp = x.to ? (/^0x[0-9a-f]{40}$/i.test(x.to) ? endpointId(HOME_CHAIN_ID, x.to) : lower(x.to)) : undefined;
-      const ok = toEp ? judge(state, lower(x.hash) as Hex, { topic0: HUB_TOPIC.Sent, container: toEp, from: x.from }).status === 'success' : state.status === 'success';
+      const ok = toEp ? judge(state, lower(x.hash) as Hex, { chainId, topic0: HUB_TOPIC.Sent, container: toEp, from: x.from }).status === 'success' : state.status === 'success';
       (ok ? landed : reverted).push(x.hash);
       const peer = ok && toEp ? parseEndpointId(toEp) : null;
       if (peer) landedTo.push(lower(peer.container));
@@ -820,6 +988,8 @@ export function prepareSend(p: { me: Endpoint; wallet: string; to: Endpoint; sub
   let sealed = false;
   // 对方公钥可用、但收信链位图里没有本链那一位：发出去对方不会读，直接拒绝（按原始位图判断，不认识的链不会让检查被跳过）
   if (p.to.key.usable && !readsChain(p.to, p.me.chainId)) throw new TapeSendError('wrong-chain', 'recipient does not read this chain');
+  // 消息写在发件人那条链的中枢里：本客户端必须启用了那条链
+  const c = chainOf(p.me.chainId);
   if (canSeal(p.to)) {
     const recipient = hexToBytes(p.to.key.key, 32);
     const recipients = [recipient];
@@ -834,7 +1004,7 @@ export function prepareSend(p: { me: Endpoint; wallet: string; to: Endpoint; sub
     if (!p.publicOk) throw new TapeSendError('no-key', 'recipient has no usable key');
     payload = encodePublic(content);
   }
-  const tx = chain.encodeSend({ circuits: p.me.circuits, tokenId: p.me.tokenId, to: p.to.endpoint, ref, payload }) as { to: Hex; data: Hex };
+  const tx = c.encodeSend({ circuits: p.me.circuits, tokenId: p.me.tokenId, to: p.to.endpoint, ref, payload }) as { to: Hex; data: Hex };
   return { tx, sealed, recipientVersion: p.to.key.version };
 }
 
@@ -850,11 +1020,11 @@ export function replySubject(raw: string): string {
  * 用区块号比较，避免节点故障时先读到新块、后读到旧块造成误报。
  */
 // 各链中枢地址相同：按"链号 + 中枢"区分，多链启用后各链的封印状态不会互相覆盖
-const stickyKey = () => `tapesend:sticky:${chain.chainId}:${hubAddress.toLowerCase()}`;
-export function stickyFactory(f: Endpoint['factory'], block: string): Endpoint['factory'] {
+const stickyKey = (chainId: number) => `tapesend:sticky:${chainId}:${hubAddress.toLowerCase()}`;
+export function stickyFactory(f: Endpoint['factory'], block: string, chainId: number): Endpoint['factory'] {
   let st = { circuitsChanged: false, inEffectAt: '', lostSeal: false };
   try {
-    st = { ...st, ...JSON.parse(localStorage.getItem(stickyKey()) ?? '{}') };
+    st = { ...st, ...JSON.parse(localStorage.getItem(stickyKey(chainId)) ?? '{}') };
   } catch {
     // 读不到就从头记
   }
@@ -871,7 +1041,7 @@ export function stickyFactory(f: Endpoint['factory'], block: string): Endpoint['
     lostSeal: st.lostSeal || (firstInEffect !== null && !f.inEffect && at >= firstInEffect),
   };
   try {
-    localStorage.setItem(stickyKey(), JSON.stringify(next));
+    localStorage.setItem(stickyKey(chainId), JSON.stringify(next));
   } catch {
     // 忽略
   }
@@ -894,9 +1064,36 @@ export const KNOWN_TOKENS: Record<string, string> = {
   BTCB: '0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c',
   ETH: '0x2170ed0880ac9a755fd29b2688956bd959f933f8',
   BEM: '0x5ce033b2bfca3af30b3e8c8457deaf776a8b695a',
+  // Binance-Peg DAI（2026-09-19 链上读过符号和小数位）：否则按其他链的名单会被误标成仿冒
+  DAI: '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3',
 };
 /** 原生币等保留符号：任何代币合约自称这些都是仿冒 */
 const RESERVED_SYMBOLS = new Set(['BNB', 'ETH', 'OKB']);
+/** 各链的常见代币（2026-09-19 链上读过符号和小数位）。BNB 的就是上面那张表 */
+const KNOWN_TOKENS_BY_CHAIN: Record<number, Record<string, string>> = {
+  56: KNOWN_TOKENS,
+  8453: {
+    USDC: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    USDT: '0xfde4c96c8593536e31f229ea8f37b2ada2699bb2',
+    WETH: '0x4200000000000000000000000000000000000006',
+    DAI: '0x50c5725949a6f0c72e6c4a641f24049a917db0cb',
+    CBBTC: '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf',
+  },
+  196: {
+    USDT: '0x1e4a5963abfd975d8c9021ce480b42188849d41d',
+    USDC: '0x74b7f16337b8972027f6196a17a631ac6de26d22',
+    WOKB: '0xe538905cf8410324e03a5a23c1c177a474d59b2b',
+    WETH: '0x5a77f1443d16ee5761d310e38b62f77f726bc71c',
+  },
+};
+/** 常见代币的小数位写死：不靠节点报，两个串通的节点也改不了显示金额 */
+const KNOWN_DECIMALS_BY_CHAIN: Record<number, Record<string, number>> = {
+  56: { USDT: 18, USDC: 18, BUSD: 18, FDUSD: 18, WBNB: 18, BTCB: 18, ETH: 18, BEM: 8, DAI: 18 },
+  8453: { USDC: 6, USDT: 6, WETH: 18, DAI: 18, CBBTC: 8 },
+  196: { USDT: 6, USDC: 6, WOKB: 18, WETH: 18 },
+};
+/** 某条链的常见代币表 */
+export const knownTokens = (chainId: number): Record<string, string> => KNOWN_TOKENS_BY_CHAIN[chainId] ?? {};
 // 常见的形近字（西里尔、希腊字母等）→ 拉丁字母
 const CONFUSABLE: Record<string, string> = {
   'А': 'A', 'В': 'B', 'С': 'C', 'Е': 'E', 'Н': 'H', 'І': 'I', 'Ј': 'J', 'К': 'K', 'М': 'M', 'О': 'O', 'Р': 'P', 'Ѕ': 'S', 'Т': 'T', 'Х': 'X', 'У': 'Y',
@@ -912,60 +1109,59 @@ export function symbolSkeleton(symbol: string): string {
     .join('')
     .toUpperCase();
 }
-export const isKnownToken = (token: string) => Object.values(KNOWN_TOKENS).includes(lower(token));
-/** 看起来像某个常见代币（或原生币），但合约地址不是它：可能是仿冒 */
-export function lookalikeToken(symbol: string, token: string): boolean {
+export const isKnownToken = (token: string, chainId: number) => Object.values(knownTokens(chainId)).includes(lower(token));
+/** 看起来像某个常见代币（或原生币），但合约地址不是它：可能是仿冒。常见币名按所有链的名单比（别的链上的 USDC 名字在这条链上照样可疑） */
+export function lookalikeToken(symbol: string, token: string, chainId: number): boolean {
   // 名单里的合约本身不是仿冒（例如真的 Binance-Peg ETH）
-  if (isKnownToken(token)) return false;
+  if (isKnownToken(token, chainId)) return false;
   // 符号里有任何非 ASCII 字符：一律当作可疑（形近字名单永远列不全，例如利索字母、切罗基字母、小型大写字母）。
   // 显示前被换成 \u{…} 可见形式的不可见字符也算
   if (/[^\x20-\x7e]/.test(symbol) || /\\u\{[0-9a-f]+\}/i.test(symbol)) return true;
   const sk = symbolSkeleton(symbol);
   if (RESERVED_SYMBOLS.has(sk)) return true;
-  if (KNOWN_TOKENS[sk]) return true;
+  if (Object.values(KNOWN_TOKENS_BY_CHAIN).some((m) => m[sk])) return true;
   // 纯英文变体：常见币名加几个字符（USDT0、USDT.E、USDT(BSC)、XUSDC……）。ETH、WBNB 不在这里（ETHFI、STETH 这类正常代币太多）
   const letters = sk.replace(/[^A-Z0-9]/g, '');
   return VARIANT_BASES.some((k) => letters.includes(k) && letters.length - k.length <= 5);
 }
-const VARIANT_BASES = ['USDT', 'USDC', 'BUSD', 'FDUSD', 'BTCB', 'BEM'];
+const VARIANT_BASES = ['USDT', 'USDC', 'BUSD', 'FDUSD', 'BTCB', 'BEM', 'CBBTC', 'WOKB'];
 
 const sel = (hex: string) => hex as `0x${string}`;
-async function viewCall(to: string, data: string, types: string[], strict = false): Promise<unknown[] | null> {
-  const [oc] = await chain.rpc.many([{ method: 'eth_call', params: [{ to, data }, 'latest'] }], strict ? { all: true } : undefined).catch(() => [{ ok: false }]);
+async function viewCall(chainId: number, to: string, data: string, types: string[], strict = false): Promise<unknown[] | null> {
+  const [oc] = await chainOf(chainId).rpc.many([{ method: 'eth_call', params: [{ to, data }, 'latest'] }], strict ? { all: true } : undefined).catch(() => [{ ok: false }]);
   if (!oc || !oc.ok || typeof oc.value !== 'string' || oc.value === '0x') return null;
   try { return decodeResult(types, oc.value); } catch { return null; }
 }
 
 export interface TokenInfo { symbol: string; name: string; decimals: number }
 /** 读代币 / NFT 合约的名字、符号、小数位（只用于显示；读不到时返回空） */
-/** 常见代币的小数位写死（BNB 链主网）：不靠节点报，两个串通的节点也改不了显示金额 */
-const KNOWN_DECIMALS: Record<string, number> = { USDT: 18, USDC: 18, BUSD: 18, FDUSD: 18, WBNB: 18, BTCB: 18, ETH: 18, BEM: 8 };
-export async function tokenInfo(kind: 'erc20' | 'erc721', token: string): Promise<TokenInfo | null> {
+export async function tokenInfo(kind: 'erc20' | 'erc721', token: string, chainId: number): Promise<TokenInfo | null> {
   if (!/^0x[0-9a-fA-F]{40}$/.test(token)) return null;
   if (kind === 'erc20') {
-    const known = Object.entries(KNOWN_TOKENS).find(([, a]) => a === lower(token));
-    if (known && KNOWN_DECIMALS[known[0]] !== undefined) return { symbol: known[0], name: known[0], decimals: KNOWN_DECIMALS[known[0]]! };
+    const known = Object.entries(knownTokens(chainId)).find(([, a]) => a === lower(token));
+    const dec = known ? KNOWN_DECIMALS_BY_CHAIN[chainId]?.[known[0]] : undefined;
+    if (known && dec !== undefined) return { symbol: known[0] === 'CBBTC' ? 'cbBTC' : known[0], name: known[0] === 'CBBTC' ? 'cbBTC' : known[0], decimals: dec };
   }
   const [sym, name, dec] = await Promise.all([
-    viewCall(token, sel('0x95d89b41'), ['string']),
-    viewCall(token, sel('0x06fdde03'), ['string']),
-    kind === 'erc20' ? viewCall(token, sel('0x313ce567'), ['uint']) : Promise.resolve([0n]),
+    viewCall(chainId, token, sel('0x95d89b41'), ['string']),
+    viewCall(chainId, token, sel('0x06fdde03'), ['string']),
+    kind === 'erc20' ? viewCall(chainId, token, sel('0x313ce567'), ['uint']) : Promise.resolve([0n]),
   ]);
   if (!sym && !name) return null;
   const decimals = dec ? Number(dec[0] as bigint) : NaN;
   if (kind === 'erc20' && (!Number.isInteger(decimals) || decimals < 0 || decimals > 36)) return null;
   return { symbol: displayText(String(sym?.[0] ?? '')).slice(0, 24), name: displayText(String(name?.[0] ?? '')).slice(0, 64), decimals: kind === 'erc20' ? decimals : 0 };
 }
-export async function erc20Balance(token: string, owner: string): Promise<bigint | null> {
-  const r = await viewCall(token, encodeCall('0x70a08231', ['address'], [lower(owner)]), ['uint']);
+export async function erc20Balance(token: string, owner: string, chainId: number): Promise<bigint | null> {
+  const r = await viewCall(chainId, token, encodeCall('0x70a08231', ['address'], [lower(owner)]), ['uint']);
   return r ? (r[0] as bigint) : null;
 }
-export async function nativeBalance(owner: string): Promise<bigint | null> {
-  const [oc] = await chain.rpc.many([{ method: 'eth_getBalance', params: [lower(owner), 'latest'] }]).catch(() => [{ ok: false }]);
+export async function nativeBalance(owner: string, chainId: number): Promise<bigint | null> {
+  const [oc] = await chainOf(chainId).rpc.many([{ method: 'eth_getBalance', params: [lower(owner), 'latest'] }]).catch(() => [{ ok: false }]);
   return oc && oc.ok && typeof oc.value === 'string' ? BigInt(oc.value) : null;
 }
-export async function nftOwner(token: string, tokenId: string): Promise<string | null> {
-  const r = await viewCall(token, encodeCall('0x6352211e', ['uint256'], [BigInt(tokenId)]), ['address']);
+export async function nftOwner(token: string, tokenId: string, chainId: number): Promise<string | null> {
+  const r = await viewCall(chainId, token, encodeCall('0x6352211e', ['uint256'], [BigInt(tokenId)]), ['address']);
   return r ? lower(r[0] as string) : null;
 }
 
@@ -998,8 +1194,8 @@ export function transferTx(a: AssetDraft, wallet: string, toContainer: string): 
   return { to: a.token, data: encodeCall('0x23b872dd', ['address', 'address', 'uint256'], [lower(wallet), lower(toContainer), BigInt(a.tokenId)]) as Hex };
 }
 
-async function strictTx(hash: Hex): Promise<{ from: string; to: string; value: bigint } | null | 'none'> {
-  const [a] = await chain.rpc.many([{
+async function strictTx(hash: Hex, chainId: number): Promise<{ from: string; to: string; value: bigint } | null | 'none'> {
+  const [a] = await chainOf(chainId).rpc.many([{
     method: 'eth_getTransactionByHash', params: [lower(hash)],
     normalize: (v: { from?: string; to?: string | null; value?: string } | null) => (v && typeof v.from === 'string' && typeof v.value === 'string' ? { from: lower(v.from), to: lower(String(v.to ?? '')), value: v.value } : null),
   }], { all: true }).catch(() => [{ ok: false }]);
@@ -1038,13 +1234,14 @@ export function messageSender(m: Message): Promise<string | null> {
   let p = senderCache.get(key);
   if (!p) {
     p = (async () => {
-      if (!m.txHint) return null;
-      const rc = await strictReceiptState(m.txHint);
+      if (!m.txHint || !chains.has(m.chainId)) return null;
+      const c = chainOf(m.chainId);
+      const rc = await strictReceiptState(m.txHint, m.chainId);
       if (rc === 'none' || rc === 'error' || rc.status !== 'success' || rc.blockNumber !== BigInt(m.blockNumber)) return null;
       const payload = bytesToHex(m.payload);
       const found = rc.logs.some((l) => {
         let d: { to: string; from: string; ref: string; inboxIndex: bigint; payload: Uint8Array } | null = null;
-        try { d = chain.decodeSentLog({ address: l.address, topics: l.topics, data: l.data }); } catch { d = null; }
+        try { d = c.decodeSentLog({ address: l.address, topics: l.topics, data: l.data }); } catch { d = null; }
         return Boolean(d && d.to === lower(m.toEndpoint) && d.from === lower(m.from) && d.inboxIndex === BigInt(m.index)
           && d.ref === lower(m.ref) && bytesToHex(d.payload) === payload);
       });
@@ -1052,7 +1249,7 @@ export function messageSender(m: Message): Promise<string | null> {
       // 同一笔交易里还转移了 NFT（ERC-721 Transfer）：典型的"被授权合约借走电路、冒充持有人发消息、再还回去"，
       // 认定不了真正的发件人（合约没有禁止合约持有人发消息，只能在这里识别）
       if (rc.logs.some((l) => l.topics.length === 4 && lower(l.topics[0] ?? '') === TRANSFER_TOPIC)) return INDIRECT;
-      const tx = await strictTx(m.txHint);
+      const tx = await strictTx(m.txHint, m.chainId);
       if (!tx || tx === 'none') return null;
       // 只认"钱包直接调用中枢"的交易：经别的合约转手时，交易发起者不一定是电路持有人（持有人可能是那个合约），
       // 发起者反而可能是被诱导去调用那个合约的付款人——这种一律认定不了发件钱包
@@ -1067,8 +1264,8 @@ export function messageSender(m: Message): Promise<string | null> {
 }
 
 /** 区块时间（多节点严格一致） */
-async function strictBlockTime(block: bigint): Promise<number | null> {
-  const [a] = await chain.rpc.many([{ method: 'eth_getBlockByNumber', params: ['0x' + block.toString(16), false], normalize: normalizeHeader }], { all: true }).catch(() => [{ ok: false }]);
+async function strictBlockTime(block: bigint, chainId: number): Promise<number | null> {
+  const [a] = await chainOf(chainId).rpc.many([{ method: 'eth_getBlockByNumber', params: ['0x' + block.toString(16), false], normalize: normalizeHeader }], { all: true }).catch(() => [{ ok: false }]);
   if (!a || !a.ok || !a.raw) return null;
   const n = Number(BigInt(a.raw.timestamp));
   return Number.isSafeInteger(n) ? n : null;
@@ -1080,7 +1277,8 @@ type TransferFound = { status: 'found'; payer: string; txFrom: string; block: bi
  * 代币的付款方以 Transfer 事件的转出方为准；原生币要求交易直接转给容器。回执、交易都用多节点严格一致读取。
  */
 async function checkTransfer(a: Exclude<Attachment, { type: 'image' }>, toContainer: string): Promise<TransferFound | { status: 'mismatch' | 'unavailable' | 'unverifiable' }> {
-  const [rc, tx] = await Promise.all([strictReceiptState(a.tx), strictTx(a.tx)]);
+  // 转账在附件声明的那条链上读（调用方已保证它就是消息所在的链）
+  const [rc, tx] = await Promise.all([strictReceiptState(a.tx, a.chainId), strictTx(a.tx, a.chainId)]);
   // 所有节点一致说既没有回执也没有这笔交易：编造的交易编号
   if (rc === 'none' && tx === 'none') return { status: 'mismatch' };
   if (rc === 'error' || rc === 'none' || tx === null || tx === 'none') return { status: 'unavailable' };
@@ -1099,7 +1297,7 @@ async function checkTransfer(a: Exclude<Attachment, { type: 'image' }>, toContai
       : l.topics.length === 4 && lower(l.topics[3] ?? '') === word(BigInt(a.tokenId))
   ));
   if (!log) return { status: 'mismatch' };
-  return { status: 'found', payer: '0x' + lower(log.topics[1] ?? '').slice(-40), txFrom: tx.from, block: rc.blockNumber, known: a.type === 'erc20' && isKnownToken(a.token) };
+  return { status: 'found', payer: '0x' + lower(log.topics[1] ?? '').slice(-40), txFrom: tx.from, block: rc.blockNumber, known: a.type === 'erc20' && isKnownToken(a.token, a.chainId) };
 }
 
 /**
@@ -1114,7 +1312,12 @@ export function verifyAttachment(a: Attachment, m: Message): Promise<AttachmentC
   if (a.type === 'image') return Promise.resolve({ status: 'ok', from: '', known: true });
   // 还没最终确认的消息：链重组时它的序号和 ID 可能变，先不核对、不写首次引用记录
   if (m.pending) return Promise.resolve({ status: 'pending' });
-  if (a.chainId !== chain.chainId || m.chainId !== chain.chainId) return Promise.resolve({ status: 'other-chain' });
+  // 这页读取时没核对上这条链的中枢实现：不能证明消息记录没被篡改，附件暂不核对（重新加载时再试）
+  if (m.chainUnchecked) return Promise.resolve({ status: 'unavailable' });
+  // 资产必须转在消息所在的那条链上（发件人在那条链上付款、发消息）；本客户端没启用的链核对不了
+  if (a.chainId !== m.chainId || !chains.has(m.chainId)) return Promise.resolve({ status: 'other-chain' });
+  // 收件人在别的链上：转账转进的是"收件容器地址在消息这条链上"的那个地址，没有人控制它，不能当作付给了对方
+  if (parseEndpointId(m.toEndpoint)?.chainId !== m.chainId) return Promise.resolve({ status: 'mismatch' });
   const key = `${m.id}:${m.digest}:${a.type}:${a.tx}:${'token' in a ? a.token : ''}:${'amount' in a ? a.amount : ''}:${'tokenId' in a ? a.tokenId : ''}`;
   let p = checkCache.get(key);
   if (!p) {
@@ -1127,7 +1330,7 @@ export function verifyAttachment(a: Attachment, m: Message): Promise<AttachmentC
       if (sender === INDIRECT) return { status: 'indirect' };
       const bound = from === sender || (from === lower(m.from) && t.txFrom === sender);
       if (!bound) return { status: 'third-party', from, known: t.known };
-      const ts = await strictBlockTime(t.block);
+      const ts = await strictBlockTime(t.block, m.chainId);
       if (ts === null) return { status: 'unavailable' };
       if (m.timestamp - ts > TRANSFER_WINDOW_SECONDS) return { status: 'stale', from, known: t.known };
       // 只有"转账之后，这个钱包发给这个收件端点的第一条消息"能引用这笔转账：只看链上信箱，任何客户端算出的结论都一样，
@@ -1136,7 +1339,7 @@ export function verifyAttachment(a: Attachment, m: Message): Promise<AttachmentC
       if (first === 'unknown') return { status: 'unavailable' };
       if (first === 'crowded') return { status: 'crowded', from, known: t.known };
       if (first === 'no') return { status: 'not-first', from, known: t.known };
-      claimTransfer(a.tx, m.to, { id: m.id, block: m.blockNumber, index: m.index });
+      claimTransfer(a.tx, m.to, { id: m.id, block: m.blockNumber, index: m.index }, m.chainId);
       return { status: 'ok', from, known: t.known };
     })();
     checkCache.set(key, p);
@@ -1158,7 +1361,7 @@ async function firstAfterTransfer(m: Message, transferBlock: bigint, sender: str
   const others: Array<{ id: string; chainId: number; index: number; to: string; from: string; fromEndpoint: string; blockNumber: number; timestamp: number; digest: string }> = [];
   try {
     while (before !== undefined && before > 0) {
-      const page = await chain.inbox(m.toEndpoint, { before, limit: 50 });
+      const page = await chainOf(m.chainId).inbox(m.toEndpoint, { before, limit: 50 });
       let done = false;
       for (const e of page.items as typeof others) {
         if (BigInt(e.blockNumber) < transferBlock) { done = true; break; }
@@ -1173,7 +1376,7 @@ async function firstAfterTransfer(m: Message, transferBlock: bigint, sender: str
       const cacheKey = `${e.id}:${lower(e.digest)}`;
       let got = payloadCache.get(cacheKey);
       if (!got) {
-        got = await chain.fetchMessage(e) as { payload: Uint8Array; ref: string; txHint?: string | null };
+        got = await chainOf(m.chainId).fetchMessage(e) as { payload: Uint8Array; ref: string; txHint?: string | null };
         if (got.txHint) payloadCache.set(cacheKey, got);
       }
       const toParsed = parseEndpointId(e.to);
@@ -1195,15 +1398,18 @@ async function firstAfterTransfer(m: Message, transferBlock: bigint, sender: str
 // 转账的"首次引用"记录：核对通过的附件按交易哈希记下最早引用它的那条消息，持久保存在本机、只会变得更早。
 // 只有核对通过（付款钱包就是发消息的钱包）的才记，别人抢先引用你的付款抢不到这个位置。
 export interface TransferClaim { id: string; block: number; index: number }
-const CLAIMS_KEY = `tapesend:claims:v2:${HOME_CHAIN_ID}`;
+// 各链一份：同一个交易哈希在不同链上是不同的交易（BNB 沿用原来的键）
+const claimsKey = (chainId: number) => `tapesend:claims:v2:${chainId}`;
 const CLAIMS_MAX = 3000;
-let claims: Map<string, TransferClaim> | null = null;
+const claimsByChain = new Map<number, Map<string, TransferClaim>>();
 const claimListeners = new Set<() => void>();
-function loadClaims(): Map<string, TransferClaim> {
+function loadClaims(chainId: number): Map<string, TransferClaim> {
+  let claims = claimsByChain.get(chainId);
   if (claims) return claims;
   claims = new Map();
+  claimsByChain.set(chainId, claims);
   try {
-    const v = JSON.parse(localStorage.getItem(CLAIMS_KEY) ?? '[]');
+    const v = JSON.parse(localStorage.getItem(claimsKey(chainId)) ?? '[]');
     if (Array.isArray(v)) {
       for (const x of v) {
         if (Array.isArray(x) && typeof x[0] === 'string' && x[1] && typeof x[1].id === 'string' && Number.isSafeInteger(x[1].block) && Number.isSafeInteger(x[1].index)) {
@@ -1219,19 +1425,19 @@ function loadClaims(): Map<string, TransferClaim> {
 const earlier = (a: TransferClaim, b: TransferClaim) => a.block < b.block || (a.block === b.block && (a.index < b.index || (a.index === b.index && a.id < b.id)));
 // 键 = 交易哈希 + 收件容器：一笔交易同时转给两个容器（批量转账）时互不干扰
 const claimKey = (tx: string, toContainer: string) => `${lower(tx)}:${lower(toContainer)}`;
-export function claimTransfer(tx: string, toContainer: string, c: TransferClaim) {
-  const map = loadClaims();
+export function claimTransfer(tx: string, toContainer: string, c: TransferClaim, chainId: number) {
+  const map = loadClaims(chainId);
   const k = claimKey(tx, toContainer);
   const cur = map.get(k);
   if (cur && (cur.id === c.id || earlier(cur, c))) return;
   map.delete(k);
   map.set(k, c);
   while (map.size > CLAIMS_MAX) map.delete(map.keys().next().value!);
-  try { localStorage.setItem(CLAIMS_KEY, JSON.stringify([...map])); } catch { /* 存不下时只在本次运行里生效 */ }
+  try { localStorage.setItem(claimsKey(chainId), JSON.stringify([...map])); } catch { /* 存不下时只在本次运行里生效 */ }
   for (const f of claimListeners) f();
 }
-export function firstClaim(tx: string, toContainer: string): TransferClaim | null {
-  return loadClaims().get(claimKey(tx, toContainer)) ?? null;
+export function firstClaim(tx: string, toContainer: string, chainId: number): TransferClaim | null {
+  return loadClaims(chainId).get(claimKey(tx, toContainer)) ?? null;
 }
 export function onClaims(f: () => void): () => void {
   claimListeners.add(f);
@@ -1246,10 +1452,10 @@ export function onClaims(f: () => void): () => void {
  *   unknown   暂时确认不了
  * 只有 reverted 才允许再转一次；其余情况这笔转账都要当成"已转出"记住。
  */
-export async function waitTransfer(hash: Hex, a: AssetDraft, toContainer: string): Promise<'ok' | 'reverted' | 'mismatch' | 'unknown'> {
-  const att = { ...a, chainId: chain.chainId, tx: lower(hash) as Hex } as Exclude<Attachment, { type: 'image' }>;
+export async function waitTransfer(hash: Hex, a: AssetDraft, toContainer: string, chainId: number): Promise<'ok' | 'reverted' | 'mismatch' | 'unknown'> {
+  const att = { ...a, chainId, tx: lower(hash) as Hex } as Exclude<Attachment, { type: 'image' }>;
   for (let i = 0; i < 60; i++) {
-    const rc = await strictReceiptState(lower(hash) as Hex);
+    const rc = await strictReceiptState(lower(hash) as Hex, chainId);
     if (rc !== 'none' && rc !== 'error') {
       if (rc.status !== 'success') return 'reverted';
       const v = await checkTransfer(att, toContainer);
@@ -1264,8 +1470,8 @@ export async function waitTransfer(hash: Hex, a: AssetDraft, toContainer: string
  * 钱包是什么账户：普通钱包（eoa）、EIP-7702 委托过的普通钱包（7702）、合约钱包（contract，例如 Safe、4337 智能账户）。
  * 合约钱包付款时，交易发起者、转出方和发消息的钱包对不上，收件方核实不了。读不到返回 null
  */
-export async function walletKind(wallet: string): Promise<'eoa' | '7702' | 'contract' | null> {
-  const [a] = await chain.rpc.many([{ method: 'eth_getCode', params: [lower(wallet), 'latest'] }], { all: true }).catch(() => [{ ok: false }]);
+export async function walletKind(wallet: string, chainId: number): Promise<'eoa' | '7702' | 'contract' | null> {
+  const [a] = await chainOf(chainId).rpc.many([{ method: 'eth_getCode', params: [lower(wallet), 'latest'] }], { all: true }).catch(() => [{ ok: false }]);
   if (!a || !a.ok || typeof a.value !== 'string') return null;
   const code = lower(a.value);
   if (code === '0x') return 'eoa';
@@ -1275,9 +1481,9 @@ export async function walletKind(wallet: string): Promise<'eoa' | '7702' | 'cont
 }
 
 /** 刚发出的转账：多节点一致读到它的 nonce（在交易池里时才读得到，退避重试几次） */
-export async function txNonce(hash: Hex, wallet: string): Promise<number | undefined> {
+export async function txNonce(hash: Hex, wallet: string, chainId: number): Promise<number | undefined> {
   for (let i = 0; i < 4; i++) {
-    const o = await strictTxOrigin(hash).catch(() => null);
+    const o = await strictTxOrigin(hash, chainId).catch(() => null);
     if (o && o.from === lower(wallet)) return o.nonce;
     if (i < 3) await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
   }
@@ -1290,9 +1496,10 @@ export async function txNonce(hash: Hex, wallet: string): Promise<number | undef
  *   cancelled  原交易所有节点一致说没有回执，同 nonce 的替换交易已上链但调用不同（取消）：资产没有转出
  *   unknown    判断不了：继续当作"已转出"
  */
-export async function transferReplacement(original: Hex, replacement: Hex, expected: { wallet: string; nonce?: number; to: string; data?: string; value?: bigint }): Promise<'same' | 'cancelled' | 'unknown'> {
+export async function transferReplacement(original: Hex, replacement: Hex, expected: { chainId: number; wallet: string; nonce?: number; to: string; data?: string; value?: bigint }): Promise<'same' | 'cancelled' | 'unknown'> {
   if (expected.nonce === undefined) return 'unknown';
-  const [orig, rep, o, t] = await Promise.all([strictReceiptState(lower(original) as Hex), strictReceiptState(lower(replacement) as Hex), strictTxOrigin(lower(replacement) as Hex), strictTx(lower(replacement) as Hex)]);
+  const id = expected.chainId;
+  const [orig, rep, o, t] = await Promise.all([strictReceiptState(lower(original) as Hex, id), strictReceiptState(lower(replacement) as Hex, id), strictTxOrigin(lower(replacement) as Hex, id), strictTx(lower(replacement) as Hex, id)]);
   if (orig !== 'none' || rep === 'none' || rep === 'error' || !o || !t || t === 'none') return 'unknown';
   if (o.from !== lower(expected.wallet) || o.nonce !== expected.nonce) return 'unknown';
   const same = t.to === lower(expected.to) && o.input === lower(expected.data ?? '0x') && t.value === (expected.value ?? 0n);
@@ -1300,9 +1507,9 @@ export async function transferReplacement(original: Hex, replacement: Hex, expec
 }
 
 /** 这个地址是不是 TapeOut 登记过的电路合约（处理器）：电路 NFT 不能当附件发 */
-export async function isCircuitContract(token: string): Promise<boolean> {
+export async function isCircuitContract(token: string, chainId: number): Promise<boolean> {
   // 多节点严格一致：两个串通的节点回答"不是"也放不过去
-  const r = await viewCall(chain.network.factory, encodeCall('0x' + keccakHex('isCPU(address)').slice(2, 10), ['address'], [lower(token)]), ['bool'], true);
+  const r = await viewCall(chainId, chainOf(chainId).network.factory, encodeCall('0x' + keccakHex('isCPU(address)').slice(2, 10), ['address'], [lower(token)]), ['bool'], true);
   // 读不到时按"是"处理：宁可拦下，也不能让用户把身份电路转出去
   return r ? Boolean(r[0]) : true;
 }
@@ -1354,19 +1561,22 @@ export function saveTransfers(me: string, toContainer: string, list: Attachment[
 
 // ---------------------------------------------------------------- 电路容器资产：查看与取出（容器的 execute，需要持有人签名）
 
-/** 容器每次 execute 收的协议手续费（TapeOutCircuitAccount.EXEC_FEE，读不到时用这个值） */
+/** 容器每次 execute 收的协议手续费（TapeOutCircuitAccount.EXEC_FEE，读不到时用这个值）：BNB 0.0002、Base 0.00006 ETH、X Layer 0.0013 OKB */
 export const CONTAINER_EXEC_FEE_DEFAULT = 200_000_000_000_000n; // 0.0002 BNB
-export async function containerExecFee(container: string): Promise<bigint> {
+const EXEC_FEE_DEFAULTS: Record<number, bigint> = { 56: CONTAINER_EXEC_FEE_DEFAULT, 8453: 60_000_000_000_000n, 196: 1_300_000_000_000_000n };
+export async function containerExecFee(container: string, chainId: number): Promise<bigint> {
+  const fallback = EXEC_FEE_DEFAULTS[chainId] ?? CONTAINER_EXEC_FEE_DEFAULT;
   // 多节点严格读取：单个节点报高了会让用户多付
-  const r = await viewCall(container, sel('0x' + keccakHex('EXEC_FEE()').slice(2, 10)), ['uint'], true);
-  // 只接受合理范围：读到离谱的值时用已知值，免得多付
-  return r && (r[0] as bigint) > 0n && (r[0] as bigint) <= 10n ** 16n ? (r[0] as bigint) : CONTAINER_EXEC_FEE_DEFAULT;
+  const r = await viewCall(chainId, container, sel('0x' + keccakHex('EXEC_FEE()').slice(2, 10)), ['uint'], true);
+  // 只接受合理范围（不超过已知值的 2 倍）：读到离谱的值时用已知值，免得多付
+  return r && (r[0] as bigint) > 0n && (r[0] as bigint) <= fallback * 2n ? (r[0] as bigint) : fallback;
 }
 
 export interface ContainerToken { token: Hex; info: TokenInfo | null; balance: bigint | null }
 export interface ContainerNft { token: Hex; tokenId: string; info: TokenInfo | null; owned: boolean | null }
 
 /** 本机记住的、用户想在资产页里看的代币和 NFT（按容器） */
+// 容器地址本身带链号（各链不同），按容器记就不会串链
 const watchKey = (container: string) => `tapesend:watch:${lower(container)}`;
 export function watchedAssets(container: string): { tokens: Hex[]; nfts: Array<{ token: Hex; tokenId: string }> } {
   try {
@@ -1389,30 +1599,31 @@ export function watchAsset(container: string, a: { token: Hex } | { token: Hex; 
 }
 
 /**
- * 读容器资产：BNB、常见代币 + 收到过的附件 + 用户添加的代币的余额，NFT 看 ownerOf 是否仍是容器。
- * 只用于显示（默认一致规则）；取出以链上执行结果为准。
+ * 读容器资产（在容器所在的链上）：原生币、常见代币 + 收到过的附件 + 用户添加的代币的余额，NFT 看 ownerOf 是否仍是容器。
+ * 只用于显示（默认一致规则）；取出以链上执行结果为准。字段名 bnb 沿用，表示那条链的原生币。
  */
-export async function containerAssets(container: string, extra: { tokens: string[]; nfts: Array<{ token: string; tokenId: string }> }): Promise<{ bnb: bigint | null; tokens: ContainerToken[]; nfts: ContainerNft[] }> {
+export async function containerAssets(container: string, extra: { tokens: string[]; nfts: Array<{ token: string; tokenId: string }> }, chainId: number): Promise<{ bnb: bigint | null; tokens: ContainerToken[]; nfts: ContainerNft[] }> {
   const w = watchedAssets(container);
-  const tokens = [...new Set([...Object.values(KNOWN_TOKENS), ...extra.tokens, ...w.tokens].map(lower))] as Hex[];
+  const tokens = [...new Set([...Object.values(knownTokens(chainId)), ...extra.tokens, ...w.tokens].map(lower))] as Hex[];
   const nftKeys = new Map<string, { token: Hex; tokenId: string }>();
   for (const n of [...extra.nfts, ...w.nfts]) nftKeys.set(`${lower(n.token)}:${n.tokenId}`, { token: lower(n.token) as Hex, tokenId: n.tokenId });
   const [bnb, tokenRows, nftRows] = await Promise.all([
-    nativeBalance(container),
+    nativeBalance(container, chainId),
     Promise.all(tokens.map(async (token) => {
-      const [info, balance] = await Promise.all([tokenInfo('erc20', token), erc20Balance(token, container)]);
+      const [info, balance] = await Promise.all([tokenInfo('erc20', token, chainId), erc20Balance(token, container, chainId)]);
       return { token, info, balance };
     })),
     Promise.all([...nftKeys.values()].map(async (n) => {
-      const [info, owner] = await Promise.all([tokenInfo('erc721', n.token), nftOwner(n.token, n.tokenId)]);
+      const [info, owner] = await Promise.all([tokenInfo('erc721', n.token, chainId), nftOwner(n.token, n.tokenId, chainId)]);
       return { ...n, info, owned: owner === null ? null : owner === lower(container) };
     })),
   ]);
   // 常见代币余额为 0 的不列出来；收到过或手动添加的都列（让用户知道查过了）
-  // BEM 永远列出（即使余额为 0），并排在第一位
-  const explicit = new Set([...extra.tokens, ...w.tokens, KNOWN_TOKENS.BEM!].map(lower));
+  // BEM（只在 BNB 上）永远列出（即使余额为 0），并排在第一位
+  const bem = chainId === 56 ? KNOWN_TOKENS.BEM! : '';
+  const explicit = new Set([...extra.tokens, ...w.tokens, ...(bem ? [bem] : [])].map(lower));
   const shown = tokenRows.filter((r) => explicit.has(r.token) || (r.balance !== null && r.balance > 0n));
-  shown.sort((x, y) => Number(y.token === KNOWN_TOKENS.BEM) - Number(x.token === KNOWN_TOKENS.BEM));
+  shown.sort((x, y) => Number(y.token === bem) - Number(x.token === bem));
   return { bnb, tokens: shown, nfts: nftRows };
 }
 

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useAccount, usePublicClient, useSendTransaction } from 'wagmi';
-import { bsc } from 'wagmi/chains';
+import { useAccount } from 'wagmi';
+import { ChainSwitchError, useChainClient, useChainSend } from '../wallet/tx';
 import { t } from '../i18n';
 import { IconClip, IconClose, IconSend } from '../icons';
 import { compressImage } from '../data/image';
 import { type AssetKind, type ComposeItem, AssetDialog, AttachmentChips } from './Attachments';
 import {
-  type AssetDraft, type Attachment, type Endpoint, type Hex, HUB_TOPICS, formatUnits, tokenInfo, noteTransferTime, walletKind, savedTransfers, saveTransfers, transferReplacement, transferTime, transferTx, txNonce, waitTransfer, TapeSendError, canSeal, confirmTx, forgetSend, noteSendNonce, recheckUnknownSends, recordSend, sendLock, setSendLock, unknownSends, payloadLimit, peerChanged, prepareSend, readsChain, rememberPeer, resolveEndpoint,
+  type AssetDraft, type Attachment, type Endpoint, type Hex, HUB_TOPICS, formatUnits, tokenInfo, noteTransferTime, walletKind, savedTransfers, saveTransfers, transferReplacement, transferTime, transferTx, txNonce, waitTransfer, TapeSendError, canSeal, confirmTx, forgetSend, noteSendNonce, recheckUnknownSends, recordSend, sendLock, setSendLock, unknownSends, payloadLimit, peerChanged, prepareSend, readsChain, rememberPeer, resolveEndpoint, nativeSymbol, explorerUrl, chainName,
 } from '../data/tapesend';
 
 type Recipient =
@@ -58,7 +58,7 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
     if (!unknownTx) return;
     let alive = true;
     const check = async () => {
-      const r = await recheckUnknownSends(me.container, wallet).catch(() => null);
+      const r = await recheckUnknownSends(me.container, wallet, me.chainId).catch(() => null);
       if (!alive || !r) return;
       // 结果不明的消息后来确认上链了：它带的已转出资产已经送达，清掉本机记录，下一条不再强制带上
       for (const c of r.landedTo) saveTransfers(me.container, c, []);
@@ -76,9 +76,10 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
     void check();
     const timer = setInterval(() => void check(), 30_000);
     return () => { alive = false; clearInterval(timer); };
-  }, [me.container, wallet, unknownTx]);
-  const { sendTransactionAsync } = useSendTransaction();
-  const publicClient = usePublicClient({ chainId: bsc.id });
+  }, [me.container, me.chainId, wallet, unknownTx]);
+  // 消息和资产都发在发件人（me）所在的链上
+  const sendTx = useChainSend();
+  const publicClient = useChainClient()(me.chainId);
   const { address } = useAccount();
   const addressRef = useRef(address);
   addressRef.current = address;
@@ -123,7 +124,7 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
       const add: ComposeItem[] = saved.filter((a) => a.type !== 'image' && !have.has(a.tx)).map((a) => {
         const x = a as Exclude<Attachment, { type: 'image' }>;
         const draft = x.type === 'native' ? { type: 'native' as const, amount: x.amount } : x.type === 'erc20' ? { type: 'erc20' as const, token: x.token, amount: x.amount } : { type: 'erc721' as const, token: x.token, tokenId: x.tokenId };
-        const label = x.type === 'erc721' ? `NFT #${x.tokenId}` : x.type === 'native' ? `${formatUnits(x.amount, 18)} BNB` : t('attachToken');
+        const label = x.type === 'erc721' ? `NFT #${x.tokenId}` : x.type === 'native' ? `${formatUnits(x.amount, 18)} ${nativeSymbol(me.chainId)}` : t('attachToken');
         return { id: x.tx, kind: 'asset', draft, label, tx: x.tx, toContainer: recipientContainer.toLowerCase() };
       });
       return add.length ? [...cur, ...add] : cur;
@@ -131,13 +132,15 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
     // 代币要读出小数位和符号，才能写成"0.1 USDT"
     for (const a of saved) {
       if (a.type !== 'erc20' && a.type !== 'erc721') continue;
-      void tokenInfo(a.type, a.token).then((info) => {
+      void tokenInfo(a.type, a.token, me.chainId).then((info) => {
         if (!info) return;
         const label = a.type === 'erc20' ? `${formatUnits(a.amount, info.decimals)} ${info.symbol}` : `${info.symbol || 'NFT'} #${a.tokenId}`;
         setItems((cur) => cur.map((x) => (x.kind === 'asset' && x.tx === a.tx ? { ...x, label } : x)));
       });
     }
-  }, [me.container, recipientContainer]);
+  }, [me.container, me.chainId, recipientContainer]);
+  // 收件人在别的链上：不能附带资产（见 send 里的说明）
+  const crossChain = recipient.state === 'ready' && recipient.endpoint.chainId !== me.chainId;
   const carried = items.filter((x): x is Extract<ComposeItem, { kind: 'asset' }> => x.kind === 'asset' && Boolean(x.tx));
   // 已转出的资产放了多久：超过 1 小时才随消息发出，对方会看到"转账比消息早了一个多小时"、核实不了。每 30 秒刷新一次
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -156,15 +159,15 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
   useEffect(() => {
     if (!hasNewAsset) return;
     let alive = true;
-    void walletKind(wallet).then((k) => alive && setContractWallet(k === 'contract'));
+    void walletKind(wallet, me.chainId).then((k) => alive && setContractWallet(k === 'contract'));
     return () => { alive = false; };
-  }, [wallet, hasNewAsset]);
+  }, [wallet, me.chainId, hasNewAsset]);
   const carriedMinutes = oldestCarried !== null ? Math.floor((nowMs - oldestCarried) / 60_000) : null;
   const [dupAsset, setDupAsset] = useState<{ draft: AssetDraft; label: string } | null>(null);
 
   const wireAttachments = (list: ComposeItem[]): Attachment[] => list.map((it) => (it.kind === 'image'
     ? { type: 'image', mime: it.att.mime, data: it.att.data, w: it.att.w, h: it.att.h }
-    : ({ ...it.draft, chainId: 56, tx: it.tx ?? (('0x' + '0'.repeat(64)) as Hex) } as Attachment)));
+    : ({ ...it.draft, chainId: me.chainId, tx: it.tx ?? (('0x' + '0'.repeat(64)) as Hex) } as Attachment)));
   const bytes = useMemo(() => new TextEncoder().encode(JSON.stringify({ v: 1, kind: 'message', subject, body, attachments: wireAttachments(items), ts: Date.now() })).length,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [subject, body, items]);
@@ -180,9 +183,9 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
       case 'ready': {
         const ep = recipient.endpoint;
         if (recipient.changed) return <span className="hint bad">{t('recipientKeyChanged')}</span>;
-        if (canSeal(ep)) return <span className="hint ok">{ep.label} {t('recipientOk')}</span>;
-        if (ep.key.usable) return <span className="hint warn">{ep.label} {t('recipientBadKey')}</span>;
-        return <span className="hint warn">{ep.label} {ep.opened ? t('recipientNoKey') : t('recipientUnopened')}</span>;
+        if (canSeal(ep)) return <span className="hint ok">{ep.label} · {chainName(ep.chainId)} {t('recipientOk')}</span>;
+        if (ep.key.usable) return <span className="hint warn">{ep.label} · {chainName(ep.chainId)} {t('recipientBadKey')}</span>;
+        return <span className="hint warn">{ep.label} · {chainName(ep.chainId)} {ep.opened ? t('recipientNoKey') : t('recipientUnopened')}</span>;
       }
       default:
         return null;
@@ -201,7 +204,8 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
     };
     try {
       // TAP-10 §9 第 2、5 步：签名前重新读自己和收件人（同一轮严格一致读取），任何变化都停下重新确认
-      const [freshMe, fresh] = await Promise.all([resolveEndpoint(me.label), resolveEndpoint(snapshot.endpoint.container)]);
+      // 收件人按端点号重读：端点号里带着链号，别的链上的收件人也在它自己那条链上读
+      const [freshMe, fresh] = await Promise.all([resolveEndpoint(me.label), resolveEndpoint(snapshot.endpoint.endpoint)]);
       if (!freshMe.endpoint || freshMe.endpoint.holder?.toLowerCase() !== wallet.toLowerCase() || !freshMe.endpoint.opened) return stop(t('identityLost'));
       onIdentity(freshMe.endpoint);
       if (!freshMe.endpoint.factory.circuitsIntact) return stop(t('circuitsChanged'));
@@ -217,8 +221,14 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
         return;
       }
       if (canSeal(fresh.endpoint) === publicOk) return stop(t('recipientChangedRetry'));
+      // 收件人的公钥是从收件人那条链的中枢读的：那条链的中枢实现、电路逻辑也必须是核对过的（跨链时自己这条链的核对管不到它）
+      if (!fresh.endpoint.hub.expectedImplementation) return stop(t('recipientHubChanged').replace(/\{chain\}/g, () => chainName(fresh.endpoint!.chainId)));
+      if (!fresh.endpoint.factory.circuitsIntact) return stop(t('recipientCircuitsChanged').replace(/\{chain\}/g, () => chainName(fresh.endpoint!.chainId)));
       // 对方公钥可用、但收信链位图里没有本链那一位：发出去对方不会读（按原始位图判断）
       if (fresh.endpoint.key.usable && !readsChain(fresh.endpoint, freshMe.endpoint.chainId)) return stop(t('recipientNoHomeChain'));
+      // 收件人在别的链上：资产只能转在发件人这条链，而对方容器的地址是按对方那条链算的，
+      // 转过去的资产落在一个谁也控制不了的地址上。跨链时一律不许带资产（包括上次已转出、待随信发出的）
+      if (fresh.endpoint.chainId !== freshMe.endpoint.chainId && items.some((x) => x.kind === 'asset')) return stop(t('attachCrossChain'));
       // 钱包中途换了：不发
       if (addressRef.current?.toLowerCase() !== wallet.toLowerCase()) return stop(t('accountChanged'));
       // 别的标签页刚发出一条结果不明的、或正在钱包里等确认的：也不发
@@ -238,7 +248,7 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
         // 转账也要上发送锁：两个标签页不能同时转；钱包报错（不是拒绝）时锁住，等用户核对
         setSendLock(me.container, wallet, 'sending');
         walletCalled = true;
-        const hash = (await sendTransactionAsync({ to: tx.to, data: tx.data, value: tx.value, chainId: bsc.id, account: wallet })) as Hex;
+        const hash = await sendTx({ to: tx.to, data: tx.data, value: tx.value, chainId: freshMe.endpoint.chainId, account: wallet });
         walletCalled = false;
         noteTransferTime(hash);
         current = current.map((x) => (x.id === it.id ? { ...x, tx: hash, toContainer: fresh.endpoint.container.toLowerCase() } : x));
@@ -247,23 +257,23 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
         if (!saveCurrent()) { setProgress(''); setWalletError(true); return stop(`${t('attachSaveFailed')} ${hash}`); }
         setSendLock(me.container, wallet, null);
         // 同时让钱包连接库盯着这笔交易：钱包里"加速"或"取消"时它会报告替换交易
-        const nonce = await txNonce(hash, wallet);
+        const nonce = await txNonce(hash, wallet, freshMe.endpoint.chainId);
         let replacedBy: Hex | null = null;
         const watching = publicClient
           ? publicClient.waitForTransactionReceipt({ hash, timeout: 200_000, onReplaced: (x) => { replacedBy = x.transaction.hash as Hex; } }).catch(() => null)
           : Promise.resolve(null);
-        let r = await waitTransfer(hash, it.draft, fresh.endpoint.container);
+        let r = await waitTransfer(hash, it.draft, fresh.endpoint.container, freshMe.endpoint.chainId);
         if (r === 'unknown') {
           await watching;
           const rep = replacedBy as Hex | null;
-          const kind = rep ? await transferReplacement(hash, rep, { wallet, nonce, to: tx.to, data: tx.data, value: tx.value }) : 'unknown';
+          const kind = rep ? await transferReplacement(hash, rep, { chainId: freshMe.endpoint.chainId, wallet, nonce, to: tx.to, data: tx.data, value: tx.value }) : 'unknown';
           if (kind === 'same' && rep) {
             // 加速：记录改成替换交易，再按它核对
             noteTransferTime(rep);
             current = current.map((x) => (x.id === it.id ? { ...x, tx: rep } : x));
             setItems(current);
             saveCurrent();
-            r = await waitTransfer(rep, it.draft, fresh.endpoint.container);
+            r = await waitTransfer(rep, it.draft, fresh.endpoint.container, freshMe.endpoint.chainId);
           } else if (kind === 'cancelled') {
             // 取消：资产没有转出，撤销"已转出"记录
             current = current.map((x) => (x.id === it.id ? { ...x, tx: undefined, toContainer: undefined } : x));
@@ -288,18 +298,18 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
       // 调起钱包之前先上锁：两个标签页不会同时弹出两次确认
       setSendLock(me.container, wallet, 'sending');
       walletCalled = true;
-      const hash = (await sendTransactionAsync({ to: prepared.tx.to, data: prepared.tx.data, chainId: bsc.id, account: wallet })) as Hex;
+      const hash = await sendTx({ to: prepared.tx.to, data: prepared.tx.data, chainId: freshMe.endpoint.chainId, account: wallet });
       // 一拿到哈希就记下：之后页面被刷新、App 被系统杀掉，也不会被当成没发过
       // 记录写不进本机存储时保留发送锁：否则另一个标签页会以为没发过，可能重复发送
       if (recordSend(me.container, wallet, hash, { to: fresh.endpoint.endpoint })) setSendLock(me.container, wallet, null);
       else setSendLock(me.container, wallet, 'wallet-error');
       setUnknownTx(hash);
-      const nonce = await noteSendNonce(me.container, wallet, hash);
+      const nonce = await noteSendNonce(me.container, wallet, hash, freshMe.endpoint.chainId);
       if (!publicClient) {
         setUnknownTx(hash);
         return stop(t('txUnknown'));
       }
-      const outcome = await confirmTx((args) => publicClient.waitForTransactionReceipt(args), hash, { topic0: HUB_TOPICS.Sent, container: fresh.endpoint.endpoint, from: freshMe.endpoint.container, wallet, nonce, data: prepared.tx.data });
+      const outcome = await confirmTx((args) => publicClient.waitForTransactionReceipt(args), hash, { chainId: freshMe.endpoint.chainId, topic0: HUB_TOPICS.Sent, container: fresh.endpoint.endpoint, from: freshMe.endpoint.container, wallet, nonce, data: prepared.tx.data });
       if (outcome.status !== 'success') {
         if (outcome.status === 'reverted') { forgetSend(me.container, wallet, hash); return stop(t('txReverted')); }
         if (outcome.status === 'replaced') { forgetSend(me.container, wallet, hash); return stop(t('txReplaced')); }
@@ -312,7 +322,9 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
       setProgress('');
       // TAP-10 §9 第 7 步：在交易所在区块再看一次对方（持有人、公钥是否可用、版本）；签名到打包之间变了，对方可能读不了这条
       let warning: string | undefined;
-      const after = await resolveEndpoint(fresh.endpoint.container, { block: outcome.blockNumber }).catch(() => null);
+      // 交易区块是发件人那条链上的；收件人在别的链上时读不了"同一区块"，改读收件人那条链的当前状态
+      const sameChain = fresh.endpoint.chainId === freshMe.endpoint.chainId;
+      const after = await resolveEndpoint(fresh.endpoint.endpoint, sameChain ? { block: outcome.blockNumber } : {}).catch(() => null);
       if (!after?.endpoint) warning = t('recipientCheckFailed');
       else if (
         after.endpoint.holder !== fresh.endpoint.holder
@@ -328,14 +340,17 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
       // 只有调起钱包之后的错误才可能"交易已经广播"；用户明确拒绝（错误码 4001 / UserRejectedRequestError）就解锁，其它一律保留锁
       const err = e as { name?: string; code?: number; cause?: { code?: number; name?: string } } | null;
       const rejected = Boolean(err && (err.code === 4001 || err.cause?.code === 4001 || err.name === 'UserRejectedRequestError' || err.cause?.name === 'UserRejectedRequestError'));
-      const walletSide = walletCalled && !rejected && !(e instanceof TapeSendError);
-      if (walletCalled && rejected) setSendLock(me.container, wallet, null);
+      // 切链失败：交易还没交给钱包，一定没发出，和"拒绝"一样解锁
+      const switchFailed = e instanceof ChainSwitchError;
+      const walletSide = walletCalled && !rejected && !switchFailed && !(e instanceof TapeSendError);
+      if (walletCalled && (rejected || switchFailed)) setSendLock(me.container, wallet, null);
       if (walletSide) {
         setSendLock(me.container, wallet, 'wallet-error');
         setWalletError(true);
       }
       setProgress('');
       // 在钱包里点了拒绝（或钱包自己拒收）：不是错误，给一句能看懂的话；带图片的大消息另外提示
+      if (switchFailed) { stop(t('switchChainFailed').replace(/\{chain\}/g, () => chainName(me.chainId))); return; }
       if (rejected) {
         const big = bytes > 4000;
         stop(big ? t('walletRejectedBig') : t('walletRejected'));
@@ -372,9 +387,11 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
           <div className="menu-backdrop" onClick={() => setAttachMenu(false)} />
           <div className={`menu ${variant === 'inline' ? 'menu-up' : ''}`} role="menu">
             <button role="menuitem" onClick={() => { setAttachMenu(false); fileRef.current?.click(); }}>{t('attachImage')}<span className="menu-hint">{t('attachImageHint')}</span></button>
-            <button role="menuitem" onClick={() => { setAttachMenu(false); setAssetKind('erc20'); }}>{t('attachToken')}<span className="menu-hint">{t('attachAssetHint')}</span></button>
+            {crossChain ? <div className="menu-hint" style={{ padding: '6px 12px' }}>{t('attachCrossChain')}</div> : null}
+            {!crossChain ? <><button role="menuitem" onClick={() => { setAttachMenu(false); setAssetKind('erc20'); }}>{t('attachToken')}<span className="menu-hint">{t('attachAssetHint')}</span></button>
             <button role="menuitem" onClick={() => { setAttachMenu(false); setAssetKind('erc721'); }}>{t('attachNft')}<span className="menu-hint">{t('attachAssetHint')}</span></button>
-            <button role="menuitem" onClick={() => { setAttachMenu(false); setAssetKind('bem'); }}>BEM<span className="menu-hint">{t('attachAssetHint')}</span></button>
+            {/* BEM 只在 BNB Chain 上 */}
+            {me.chainId === 56 ? <button role="menuitem" onClick={() => { setAttachMenu(false); setAssetKind('bem'); }}>BEM<span className="menu-hint">{t('attachAssetHint')}</span></button> : null}</> : null}
           </div>
         </>
       ) : null}
@@ -421,6 +438,7 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
           kind={assetKind}
           wallet={wallet}
           recipient={recipient.state === 'ready' ? recipient.endpoint : null}
+          chainId={me.chainId}
           onClose={() => setAssetKind(null)}
           onAdd={(draft, label) => {
             setAssetKind(null);
@@ -464,7 +482,7 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
       {confirmChanged && recipient.state === 'ready' ? (
         <div className="modal-backdrop" onClick={() => setConfirmChanged(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()} role="alertdialog">
-            <h3>{recipient.endpoint.label}</h3>
+            <h3>{recipient.endpoint.label} <span className="hint">{chainName(recipient.endpoint.chainId)}</span></h3>
             <p>{t('recipientKeyChanged')}</p>
             <div className="actions">
               <button className="btn" onClick={() => setConfirmChanged(false)}>{t('cancel')}</button>
@@ -499,7 +517,7 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
           <div className="notice warn chat-compose-note">
             <div className="grow">
               {goneNote ? t('unknownGone') : t('txUnknown')}{' '}
-              <a href={`https://bscscan.com/tx/${unknownTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a>
+              <a href={`${explorerUrl(me.chainId)}/tx/${unknownTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a>
             </div>
             <button className="btn small" onClick={() => { if (unknownTx) forgetSend(me.container, wallet, unknownTx); setUnknownTx(unknownSends(me.container, wallet).at(-1)?.hash ?? null); setError(''); }}>{t('unknownRelease')}</button>
           </div>
@@ -513,7 +531,7 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
         {resolvedNote && !unknownTx ? <div className="notice ok chat-compose-note">{resolvedNote}</div> : null}
         {revertedTx && !unknownTx ? (
           <div className="notice bad chat-compose-note">
-            <div className="grow">{t('prevReverted')} <a href={`https://bscscan.com/tx/${revertedTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a></div>
+            <div className="grow">{t('prevReverted')} <a href={`${explorerUrl(me.chainId)}/tx/${revertedTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a></div>
             <button className="btn small" onClick={() => setRevertedTx(null)}>{t('close')}</button>
           </div>
         ) : null}
@@ -527,27 +545,34 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
             <button className="icon-btn" onClick={onClearQuote} disabled={sending} aria-label={t('cancel')}><IconClose /></button>
           </div>
         ) : null}
-        <div className="chat-compose-note">{attachUi}</div>
-        <div className="chat-input-row">
-          {attachButton}
+        <div className="mail-reply">
+          <div className="mail-reply-head">
+            <span><span className="mail-reply-k">{t('from')}</span> <b className="mono">{me.label}</b></span>
+            <span><span className="mail-reply-k">{t('to')}</span> <b className="mono">{recipient.state === 'ready' ? recipient.endpoint.label : '…'}</b>{recipient.state === 'ready' ? <span className="hint"> {chainName(recipient.endpoint.chainId)}</span> : null}</span>
+          </div>
           <textarea
-            className="chat-input"
-            rows={Math.min(5, Math.max(1, body.split('\n').length))}
+            className="mail-reply-body"
+            rows={5}
             value={body}
             disabled={sending || halted}
-            placeholder={halted ? t('circuitsChanged') : recipient.state === 'resolving' ? t('resolving') : t('chatPlaceholder')}
+            placeholder={halted ? t('circuitsChanged') : recipient.state === 'resolving' ? t('resolving') : t('mailReplyPlaceholder')}
             onChange={(e) => setBody(e.target.value)}
             onKeyDown={(e) => {
-              // 回车发送、Shift+回车换行；输入法正在拼字时回车只是选字，不发送
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+              // 像写邮件：回车换行；⌘/Ctrl+回车发送（输入法正在拼字时不发送）
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                 e.preventDefault();
                 if (canSend) trySend();
               }
             }}
           />
-          <button className="chat-send" disabled={!canSend} onClick={trySend} aria-label={t('send')}>
-            {sending ? <span className="spinner" /> : <IconSend />}
-          </button>
+          <div className="mail-reply-attach">{attachUi}</div>
+          <div className="mail-reply-foot">
+            {attachButton}
+            <span className="grow hint">{t('mailReplyHint')}</span>
+            <button className="btn primary" disabled={!canSend} onClick={trySend}>
+              {sending ? <span className="spinner" /> : <><IconSend /> {t('send')}</>}
+            </button>
+          </div>
         </div>
         {modals}
       </div>
@@ -595,13 +620,13 @@ export function Compose({ me, wallet, initial, onIdentity, onClose, onSent, vari
           {error ? <div className="notice bad" role="alert">{error}</div> : null}
           {unknownTx && !error ? <div className="notice warn">{goneNote ? t('unknownGone') : t('txUnknown')}</div> : null}
           {resolvedNote && !unknownTx ? <div className="notice ok">{resolvedNote}</div> : null}
-          {revertedTx && !unknownTx ? <div className="notice bad">{t('prevReverted')} <a href={`https://bscscan.com/tx/${revertedTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a></div> : null}
+          {revertedTx && !unknownTx ? <div className="notice bad">{t('prevReverted')} <a href={`${explorerUrl(me.chainId)}/tx/${revertedTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a></div> : null}
           {walletError ? (
             <p className="hint"><button className="btn small" onClick={() => { setSendLock(me.container, wallet, null); setWalletError(false); setError(''); }}>{t('unknownRelease')}</button></p>
           ) : null}
           {unknownTx ? (
             <p className="hint" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-              <a href={`https://bscscan.com/tx/${unknownTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a>
+              <a href={`${explorerUrl(me.chainId)}/tx/${unknownTx}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a>
               <button className="btn small" onClick={() => { if (unknownTx) forgetSend(me.container, wallet, unknownTx); setUnknownTx(unknownSends(me.container, wallet).at(-1)?.hash ?? null); setError(''); }}>{t('unknownRelease')}</button>
             </p>
           ) : null}

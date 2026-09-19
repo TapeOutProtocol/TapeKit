@@ -1,7 +1,7 @@
 {
   "name": "tapekit",
   "private": true,
-  "description": "Tapekit: the open-source browser kernel for the TapeOut protocol. Websites stored byte-for-byte on BNB Chain, read and verified directly by the client.",
+  "description": "Tapekit: the open-source browser kernel for the TapeOut protocol. Websites stored byte-for-byte on BNB Chain, X Layer and Base, read and verified directly by the client.",
   "type": "module",
   "license": "MIT",
   "scripts": {

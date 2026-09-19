@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { usePublicClient, useSendTransaction } from 'wagmi';
-import { bsc } from 'wagmi/chains';
+import { ChainSwitchError, useChainClient, useChainSend } from '../wallet/tx';
 import { t } from '../i18n';
 import { IconBack, IconReload } from '../icons';
 import { toChecksumAddress } from '../../../../kernel/src/keccak.js';
 import {
   type ContainerNft, type ContainerToken, type Endpoint, type Hex, CONTAINER_ERRORS, KNOWN_TOKENS, containerAssets, containerExecFee, formatUnits,
-  isCircuitContract, isKnownToken, lookalikeToken, parseUnits, short, tokenInfo, watchAsset, withdrawTx,
+  chainName, explorerUrl, isCircuitContract, isKnownToken, lookalikeToken, nativeSymbol, parseUnits, short, tokenInfo, watchAsset, withdrawTx,
 } from '../data/tapesend';
 
 type Pick =
@@ -15,9 +14,10 @@ type Pick =
   | { type: 'erc721'; row: ContainerNft };
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+// BEM 只在 BNB 上（其他链上这个地址不是 BEM）
 const BEM = KNOWN_TOKENS.BEM!;
 
-/** 电路容器资产页：看容器里有什么，并由电路持有人取出（容器的 execute，每次付协议手续费） */
+/** 电路容器资产页：看容器里有什么，并由电路持有人取出（容器的 execute，每次付协议手续费）。都在容器所在的链（me.chainId）上 */
 export function AssetsSheet({ me, wallet, received, onClose }: {
   me: Endpoint;
   wallet: Hex;
@@ -32,18 +32,21 @@ export function AssetsSheet({ me, wallet, received, onClose }: {
   const [adding, setAdding] = useState<null | 'token' | 'nft'>(null);
   const [notice, setNotice] = useState('');
   const isHolder = (me.holder ?? '').toLowerCase() === wallet.toLowerCase();
+  const chainId = me.chainId;
+  const native = nativeSymbol(chainId);
+  const bem = chainId === 56 ? BEM : '';
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, f] = await Promise.all([containerAssets(me.container, received), containerExecFee(me.container)]);
+      const [d, f] = await Promise.all([containerAssets(me.container, received, chainId), containerExecFee(me.container, chainId)]);
       setData(d);
       setFee(f);
     } finally {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me.container, JSON.stringify(received)]);
+  }, [me.container, chainId, JSON.stringify(received)]);
   useEffect(() => { void load(); }, [load]);
 
   return (
@@ -61,7 +64,7 @@ export function AssetsSheet({ me, wallet, received, onClose }: {
             <p className="hint">{t('assetsIntro')}</p>
             {!me.opened ? <div className="notice warn">{t('assetsUnopened')}</div> : null}
             {!isHolder ? <div className="notice warn">{t('assetsNotHolder')}</div> : null}
-            {fee !== null ? <p className="hint">{t('assetsFee').replace(/\{fee\}/g, () => formatUnits(fee, 18))}</p> : null}
+            {fee !== null ? <p className="hint">{t('assetsFee').replace(/\{fee\}/g, () => formatUnits(fee, 18)).replace(/\{symbol\}/g, () => native)}</p> : null}
           </div>
           {notice ? <div className="notice ok" style={{ marginBottom: 8 }}>{notice}</div> : null}
 
@@ -69,30 +72,30 @@ export function AssetsSheet({ me, wallet, received, onClose }: {
             <>
               <h3 className="assets-h">{t('assetsCoins')}</h3>
               <ul className="asset-list">
-                {data.tokens.filter((r) => r.token === BEM).map((r) => (
+                {data.tokens.filter((r) => r.token === bem).map((r) => (
                   <li key={r.token} className="asset-item">
                     <span className="asset-icon">{(r.info?.symbol || '?').slice(0, 4)}</span>
                     <span className="grow">
                       <b>{r.balance === null || !r.info ? '—' : formatUnits(r.balance, r.info.decimals)} {r.info?.symbol ?? ''}</b>
                       <span className="hint mono"> {short(r.token)}</span>
-                      {r.info && lookalikeToken(r.info.symbol, r.token) ? <span className="hint bad"> {t('attachLookalike').replace(/\{symbol\}/g, () => r.info!.symbol)}</span> : null}
+                      {r.info && lookalikeToken(r.info.symbol, r.token, chainId) ? <span className="hint bad"> {t('attachLookalike').replace(/\{symbol\}/g, () => r.info!.symbol)}</span> : null}
                     </span>
                     <button className="btn small" disabled={!isHolder || !me.opened || !r.balance || !r.info} onClick={() => setPick({ type: 'erc20', row: r })}>{t('assetsWithdraw')}</button>
                   </li>
                 ))}
                 <li className="asset-item">
-                  <span className="asset-icon">BNB</span>
-                  <span className="grow"><b>{data.bnb === null ? '—' : formatUnits(data.bnb, 18)} BNB</b></span>
+                  <span className="asset-icon">{native}</span>
+                  <span className="grow"><b>{data.bnb === null ? '—' : formatUnits(data.bnb, 18)} {native}</b></span>
                   <button className="btn small" disabled={!isHolder || !me.opened || !data.bnb} onClick={() => setPick({ type: 'native', balance: data.bnb ?? 0n })}>{t('assetsWithdraw')}</button>
                 </li>
-                {data.tokens.filter((r) => r.token !== BEM).map((r) => (
+                {data.tokens.filter((r) => r.token !== bem).map((r) => (
                   <li key={r.token} className="asset-item">
                     <span className="asset-icon">{(r.info?.symbol || '?').slice(0, 4)}</span>
                     <span className="grow">
                       <b>{r.balance === null || !r.info ? '—' : formatUnits(r.balance, r.info.decimals)} {r.info?.symbol ?? ''}</b>
                       <span className="hint mono"> {short(r.token)}</span>
-                      {r.info && lookalikeToken(r.info.symbol, r.token) ? <span className="hint bad"> {t('attachLookalike').replace(/\{symbol\}/g, () => r.info!.symbol)}</span>
-                        : !isKnownToken(r.token) ? <span className="hint warn"> {t('assetsUnknownToken')}</span> : null}
+                      {r.info && lookalikeToken(r.info.symbol, r.token, chainId) ? <span className="hint bad"> {t('attachLookalike').replace(/\{symbol\}/g, () => r.info!.symbol)}</span>
+                        : !isKnownToken(r.token, chainId) ? <span className="hint warn"> {t('assetsUnknownToken')}</span> : null}
                     </span>
                     <button className="btn small" disabled={!isHolder || !me.opened || !r.balance || !r.info} onClick={() => setPick({ type: 'erc20', row: r })}>{t('assetsWithdraw')}</button>
                   </li>
@@ -126,7 +129,7 @@ export function AssetsSheet({ me, wallet, received, onClose }: {
       {pick && fee !== null ? (
         <WithdrawDialog me={me} wallet={wallet} pick={pick} fee={fee} onClose={() => setPick(null)} onDone={(msg) => { setPick(null); setNotice(msg); void load(); }} />
       ) : null}
-      {adding ? <AddWatchDialog kind={adding} container={me.container} onClose={() => setAdding(null)} onAdded={() => { setAdding(null); void load(); }} /> : null}
+      {adding ? <AddWatchDialog kind={adding} container={me.container} chainId={chainId} onClose={() => setAdding(null)} onAdded={() => { setAdding(null); void load(); }} /> : null}
     </div>
   );
 }
@@ -137,13 +140,16 @@ function WithdrawDialog({ me, wallet, pick, fee, onClose, onDone }: {
   const [amount, setAmount] = useState('');
   const [dest, setDest] = useState<string>(wallet);
   const [busy, setBusy] = useState(false);
-  // 上一笔取出结果不明：不许在这个窗口里再点一次（可能已经取出了），关掉窗口核对后再来
-  const [unknownHash, setUnknownHash] = useState<string | null>(null);
+  // 上一笔取出结果不明：不许再点一次（可能已经取出了）。记在本机（按容器 + 钱包），关掉窗口、刷新页面也还在，核对后手动解除
+  const lockKey = `tapesend:withdraw-lock:${wallet.toLowerCase()}:${me.container.toLowerCase()}`;
+  const [unknownHash, setUnknownHashState] = useState<string | null>(() => { try { return localStorage.getItem(lockKey); } catch { return null; } });
+  const setUnknownHash = (v: string | null) => { setUnknownHashState(v); try { if (v) localStorage.setItem(lockKey, v); else localStorage.removeItem(lockKey); } catch { /* 忽略 */ } };
   const [error, setError] = useState('');
-  const { sendTransactionAsync } = useSendTransaction();
-  const publicClient = usePublicClient({ chainId: bsc.id });
+  const sendTx = useChainSend();
+  const publicClient = useChainClient()(me.chainId);
+  const native = nativeSymbol(me.chainId);
   const decimals = pick.type === 'native' ? 18 : pick.type === 'erc20' ? pick.row.info?.decimals ?? 18 : 0;
-  const symbol = pick.type === 'native' ? 'BNB' : pick.type === 'erc20' ? pick.row.info?.symbol ?? '' : `${pick.row.info?.symbol || 'NFT'} #${pick.row.tokenId}`;
+  const symbol = pick.type === 'native' ? native : pick.type === 'erc20' ? pick.row.info?.symbol ?? '' : `${pick.row.info?.symbol || 'NFT'} #${pick.row.tokenId}`;
   const balance = pick.type === 'native' ? pick.balance : pick.type === 'erc20' ? pick.row.balance ?? 0n : 1n;
   const units = pick.type === 'erc721' ? 1n : parseUnits(amount, decimals);
   const d = dest.trim();
@@ -160,9 +166,9 @@ function WithdrawDialog({ me, wallet, pick, fee, onClose, onDone }: {
   useEffect(() => {
     if (pick.type !== 'erc721') return;
     let alive = true;
-    void isCircuitContract(pick.row.token).then((c) => alive && setCircuit(c));
+    void isCircuitContract(pick.row.token, me.chainId).then((c) => alive && setCircuit(c));
     return () => { alive = false; };
-  }, [pick]);
+  }, [pick, me.chainId]);
   const circuitBlocked = circuit !== false && !toWallet;
   const ok = !unknownHash && destOk && !toSelf && !circuitBlocked && units !== null && units > 0n && units <= balance && !busy;
 
@@ -175,7 +181,7 @@ function WithdrawDialog({ me, wallet, pick, fee, onClose, onDone }: {
         : pick.type === 'erc20' ? { type: 'erc20' as const, token: pick.row.token, amount: units }
           : { type: 'erc721' as const, token: pick.row.token, tokenId: pick.row.tokenId };
       const tx = withdrawTx(me.container, asset, dest.trim(), fee);
-      const hash = (await sendTransactionAsync({ to: tx.to, data: tx.data, value: tx.value, chainId: bsc.id, account: wallet })) as Hex;
+      const hash = await sendTx({ to: tx.to, data: tx.data, value: tx.value, chainId: me.chainId, account: wallet });
       const r = publicClient ? await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 }).catch(() => null) : null;
       if (!r) { setUnknownHash(hash); setError(`${t('txUnknown')} ${hash}`); setBusy(false); return; }
       if (r.status !== 'success') { setError(t('assetsWithdrawFailed')); setBusy(false); return; }
@@ -184,6 +190,11 @@ function WithdrawDialog({ me, wallet, pick, fee, onClose, onDone }: {
       const msg = e instanceof Error ? e.message : String(e);
       const code = Object.keys(CONTAINER_ERRORS).find((k) => msg.includes(k.slice(2)));
       const name = code ? CONTAINER_ERRORS[code] : '';
+      const x = e as { name?: string; code?: number; cause?: { code?: number; name?: string } } | null;
+      const rejected = Boolean(x && (x.code === 4001 || x.cause?.code === 4001 || x.name === 'UserRejectedRequestError' || x.cause?.name === 'UserRejectedRequestError'));
+      if (e instanceof ChainSwitchError) { setError(t('switchChainFailed').replace(/\{chain\}/g, () => chainName(me.chainId))); setBusy(false); return; }
+      // 钱包那边出错（不是拒绝、也不是合约预检回滚）：交易可能已经发出，不许在这个窗口里再点一次，免得取出两次
+      if (!rejected && !name) { setUnknownHash('wallet-error'); setError(`${t('walletErrorCheckSent')} (${msg})`); setBusy(false); return; }
       setError(name === 'NotPaid' ? t('assetsUnopened') : name === 'ListedForSale' ? t('assetsListed') : name === 'NotOwner' ? t('assetsNotHolder') : msg);
       setBusy(false);
     }
@@ -212,8 +223,14 @@ function WithdrawDialog({ me, wallet, pick, fee, onClose, onDone }: {
           {toSelf ? <span className="hint bad">{t('assetsDestSelf')}</span> : null}
           {circuitBlocked && !toSelf ? <span className="hint bad">{t('assetsCircuitWalletOnly')}</span> : null}
         </div>
-        <p className="hint">{t('assetsFee').replace('{fee}', formatUnits(fee, 18))}</p>
+        <p className="hint">{t('assetsFee').replace('{fee}', formatUnits(fee, 18)).replace('{symbol}', native)}</p>
         {error ? <div className="notice bad" role="alert">{error}</div> : null}
+        {unknownHash ? (
+          <div className="notice warn" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+            <span>{t('assetsWithdrawLocked')}{/^0x[0-9a-f]{64}$/i.test(unknownHash) ? <> <a href={`${explorerUrl(me.chainId)}/tx/${unknownHash}`} target="_blank" rel="noopener noreferrer">{t('viewTx')}</a></> : null}</span>
+            <button className="btn small" onClick={() => { setUnknownHash(null); setError(''); }}>{t('unknownRelease')}</button>
+          </div>
+        ) : null}
         {confirmDest && !toWallet ? (
           <div className="notice bad" role="alert" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
             <b>{t('assetsDestConfirm')}</b>
@@ -232,16 +249,16 @@ function WithdrawDialog({ me, wallet, pick, fee, onClose, onDone }: {
   );
 }
 
-function AddWatchDialog({ kind, container, onClose, onAdded }: { kind: 'token' | 'nft'; container: string; onClose: () => void; onAdded: () => void }) {
+function AddWatchDialog({ kind, container, chainId, onClose, onAdded }: { kind: 'token' | 'nft'; container: string; chainId: number; onClose: () => void; onAdded: () => void }) {
   const [token, setToken] = useState('');
   const [tokenId, setTokenId] = useState('');
   const [name, setName] = useState<string | null>(null);
   useEffect(() => {
     if (!ADDRESS.test(token.trim())) { setName(null); return; }
     let alive = true;
-    void tokenInfo(kind === 'token' ? 'erc20' : 'erc721', token.trim()).then((i) => alive && setName(i ? `${i.name || i.symbol} (${i.symbol})` : ''));
+    void tokenInfo(kind === 'token' ? 'erc20' : 'erc721', token.trim(), chainId).then((i) => alive && setName(i ? `${i.name || i.symbol} (${i.symbol})` : ''));
     return () => { alive = false; };
-  }, [kind, token]);
+  }, [kind, token, chainId]);
   const ok = ADDRESS.test(token.trim()) && (kind === 'token' || /^\d{1,78}$/.test(tokenId.trim()));
   return (
     <div className="modal-backdrop" onClick={onClose}>

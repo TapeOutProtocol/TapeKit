@@ -2,8 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { t, locale } from '../i18n';
 import { IconBack, IconBellOff, IconMore, IconReload } from '../icons';
 import {
-  type Conversation, type Endpoint, type Hex, type Message, type OpenedMessage, canSeal, chainName, endpointContainer, isHomeEndpoint, messageSender, notePeerSender, peerHolder, resolveEndpoint,
-} from '../data/tapesend';
+  type Conversation, type Endpoint, type Hex, type Message, type OpenedMessage, canSeal, chainName, endpointContainer, explorerUrl, isHomeEndpoint, isSafeChain, messageSender, notePeerSender, peerHolder, resolveEndpoint, showsPending } from '../data/tapesend';
 import { parseEndpointId } from '../../../../send/module/src/chain.js';
 import { formatTime, useLabel } from './MessageList';
 import { Compose } from './Compose';
@@ -29,7 +28,7 @@ function Avatar({ label, peer, size = 44, onClick }: { label: string; peer: stri
   return <span className="avatar" style={style} aria-hidden>{text}</span>;
 }
 
-const explorer = (chainId: number) => (chainId === 56 ? 'https://bscscan.com' : chainId === 8453 ? 'https://basescan.org' : chainId === 196 ? 'https://www.oklink.com/xlayer' : '');
+const explorer = explorerUrl;
 
 /** 点头像弹出：这个端点的电路容器信息。me 传自己的端点（已读到），否则按端点号现读链上 */
 export function ProfileModal({ endpoint, me, onClose }: { endpoint: string; me?: Endpoint; onClose: () => void }) {
@@ -41,7 +40,8 @@ export function ProfileModal({ endpoint, me, onClose }: { endpoint: string; me?:
     if (me || !parsed) return;
     if (!isHomeEndpoint(endpoint)) { setState('other-chain'); return; }
     let alive = true;
-    resolveEndpoint(parsed.container).then((r) => {
+    // 按端点号解析：在端点所在的那条链上读
+    resolveEndpoint(endpoint).then((r) => {
       if (!alive) return;
       if (r.endpoint) { setEp(r.endpoint); setState('ok'); } else setState('failed');
     }).catch(() => alive && setState('failed'));
@@ -223,7 +223,7 @@ function Card({ m, o, mine, meLabel, peerLabel, peer, replyTo, collapsed, onTogg
             <footer className="tl-foot">
               <span className="grow">
                 {chainName(m.chainId)} {t('chatBlock')} #{m.blockNumber}
-                {m.pending ? ` ${t('pending')}` : ''}
+                {showsPending(m) ? ` ${t('pending')}` : ''}
                 {m.copies && m.copies > 1 ? ` ${t('chatDuplicate').replace('{n}', String(m.copies))}` : ''}
               </span>
               {onQuote ? <button className="tl-quote-btn" onClick={(e) => { e.stopPropagation(); onQuote(); }}>{t('quoteReply')}</button> : null}
@@ -294,7 +294,7 @@ export function ThreadTimeline({ me, peer, messages, opened, meLabel, peerLabel,
             <Card
               m={m} o={opened.get(m.id)} mine={mine} meLabel={meLabel} peerLabel={peerLabel} peer={peer}
               replyTo={replyTo} collapsed={collapsed} onProfile={onProfile}
-              onQuote={onQuote && !m.pending ? () => onQuote(m) : undefined}
+              onQuote={onQuote && !showsPending(m) ? () => onQuote(m) : undefined}
               onToggle={() => setExpanded((s) => { const n = new Set(s); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n; })}
             />
           </div>
@@ -324,7 +324,8 @@ export function ChatThread({ me, wallet, peer, messages, opened, muted, halted, 
   // 刚发出的消息：链上已经成功，但列表要过几秒才同步到；这段时间显示"已发送，正在同步"
   const [justSent, setJustSent] = useState<{ count: number; at: number } | null>(null);
   useEffect(() => {
-    if (justSent && (messages.length > justSent.count || Date.now() - justSent.at > 90_000)) setJustSent(null);
+    // L2 按安全区块读，刚发出的要几分钟后才出现：等到 6 分钟；BNB 90 秒
+    if (justSent && (messages.length > justSent.count || Date.now() - justSent.at > (isSafeChain(me.chainId) ? 360_000 : 90_000))) setJustSent(null);
   }, [messages.length, justSent]);
   const self = peer.toLowerCase() === me.endpoint.toLowerCase();
   const resolved = useLabel(peer);
@@ -390,7 +391,7 @@ export function ChatThread({ me, wallet, peer, messages, opened, muted, halted, 
         <div className="chat-inner">
           <p className="chat-banner">{t('metadataPublic')}</p>
           <ThreadTimeline me={me} peer={peer} messages={messages} opened={opened} meLabel={me.label} peerLabel={label} onProfile={(mine) => setProfile(mine || self ? 'me' : 'peer')} onQuote={home && !halted ? setQuoting : undefined} />
-          {justSent ? <div className="sent-syncing"><span className="spinner" /> {t('sentSyncing')}</div> : null}
+          {justSent ? <div className="sent-syncing"><span className="spinner" /> {isSafeChain(me.chainId) ? t('sentSyncingL2').replace(/\{chain\}/g, () => chainName(me.chainId)) : t('sentSyncing')}</div> : null}
           {copied ? <div className="toast">{t('copied')}</div> : null}
         </div>
       </div>
@@ -402,7 +403,8 @@ export function ChatThread({ me, wallet, peer, messages, opened, muted, halted, 
           variant="inline"
           me={me}
           wallet={wallet}
-          initial={{ to: container, ref: quoting?.id }}
+          // 收件人用端点号（带链号）：对方在 X Layer、Base 上时也在对方那条链上解析，不能只传容器地址（会被当成 BNB 的）
+          initial={{ to: peer, ref: quoting?.id }}
           quote={quoting ? { who: quoting.fromEndpoint.toLowerCase() === me.endpoint.toLowerCase() ? t('chatYou') : label, text: previewText(opened.get(quoting.id)) } : null}
           onClearQuote={() => setQuoting(null)}
           onIdentity={onIdentity}

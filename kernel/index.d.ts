@@ -40,14 +40,26 @@ export const STATUS_TEXT: Readonly<Record<SiteStatus, string>>;
 
 // ---------------------------------------------------------------- names, paths, scanning
 
-export interface ParsedName { kind: 'name'; tokenId: bigint; cpu: bigint; path: string }
+/** `area` is null on BNB Smart Chain; 2 = X Layer, 3 = Base (see NETWORKS). */
+export interface ParsedName { kind: 'name'; tokenId: bigint; cpu: bigint; area: number | null; path: string }
 export interface ParsedContainer { kind: 'container'; container: Address; path: string }
 export interface ParsedCircuit { kind: 'circuit'; circuits: Address; tokenId: bigint; path: string }
 export type ParsedInput = ParsedName | ParsedContainer | ParsedCircuit;
-/** Accepts every form of SPEC §2.4 (`4246.0.tape`, `4246.0`, `tape://…`, `web+tape://…`, `#4246@0`, `0x<container>`, `0x<processor>#4246`). Throws InputError otherwise. */
+/** Accepts every form of SPEC §2.4 (`4246.0.tape`, `4246.0`, `1.2.344`, `tape://…`, `web+tape://…`, `#4246@0`, `#1@2.344`, `0x<container>`, `0x<processor>#4246`). Throws InputError otherwise, including for an unassigned area code. */
 export function parseInput(raw: string): ParsedInput;
-export function formatName(tokenId: bigint | number | string, cpu: bigint | number | string, suffix?: string): string;
-export function formatUrl(tokenId: bigint | number | string, cpu: bigint | number | string, path?: string, suffix?: string): string;
+type Num = bigint | number | string;
+/** `4246.0.tape`, `1.2.344.tape` */
+export function formatName(tokenId: Num, cpu: Num, suffix?: string, area?: number | null): string;
+/** `tape://4246.0.tape/<path>`, `tape://1.2.344.tape/<path>` */
+export function formatUrl(tokenId: Num, cpu: Num, path?: string, suffix?: string, area?: number | null): string;
+/** Display form: `4246.0`, `1.2.344` */
+export function formatShort(tokenId: Num, cpu: Num, area?: number | null): string;
+/** `#4246@0`, `#1@2.344` */
+export function formatLabel(tokenId: Num, cpu: Num, area?: number | null): string;
+/** First label of a gateway host: `4246-0`, `1-2-344` */
+export function formatHostLabel(tokenId: Num, cpu: Num, area?: number | null): string;
+/** Gateway host label → parsed name, or null if malformed or the area is unassigned. */
+export function parseHostLabel(label: string): ParsedName | null;
 
 /** SPEC §6 steps 1–3. Returns null for an invalid path. */
 export function normalizePath(raw: string): string | null;
@@ -72,7 +84,24 @@ export function sha256Hex(bytes: Uint8Array): Promise<Hex>;
 
 export interface Network {
   chainId: number;
+  /** 'bnb' | 'xlayer' | 'base' */
+  key: string;
+  name: string;
+  currency: string;
+  /** area code in names; null on BNB Smart Chain */
+  area: number | null;
   nameSuffix: string;
+  /** which block reads are pinned to: 'latest' (head − 2) or 'safe' (L2) */
+  pin: 'latest' | 'safe';
+  /** block tag TapeSend treats as final */
+  finality: 'finalized' | 'safe';
+  maxBlockAgeSeconds: number;
+  /** max blocks the pinned block may trail the highest reported head (~5 minutes) */
+  maxPinLagBlocks?: number;
+  /** per-node batch limit, operator label, and whether the node reads caller keys from its URL path or query (such nodes are kept away from on-chain sites) */
+  rpcLimits: Readonly<Record<string, { maxBatch?: number; operator?: string; callerKeys?: boolean }>>;
+  /** constants for the TAP-10 factory-seal check */
+  factorySeal: Readonly<{ implementation: Address; circuitBeacon: Address; circuitImplementation: Address }>;
   factory: Address;
   opener: Address;
   registries: readonly Address[];
@@ -82,6 +111,19 @@ export interface Network {
   rpcs: readonly string[];
 }
 export const BSC_MAINNET: Readonly<Network>;
+export const XLAYER_MAINNET: Readonly<Network>;
+export const BASE_MAINNET: Readonly<Network>;
+/** Every network this client knows, BNB first. */
+export const NETWORKS: readonly Readonly<Network>[];
+export const HOME_NETWORK: Readonly<Network>;
+/** null/undefined → BNB; unknown area → null */
+export function networkByArea(area: number | null | undefined): Readonly<Network> | null;
+export function networkByChainId(chainId: number): Readonly<Network> | null;
+export function networkByKey(key: string): Readonly<Network> | null;
+/** Nodes an on-chain site may call directly (no caller-key nodes). */
+export function siteNodes(net: Network): string[];
+/** Options for createRpc: node list (or `urls` if given), per-node batch limits, operators, pin mode. */
+export function rpcOptionsFor(net: Network, urls?: string[]): { urls: string[]; maxBatchByUrl: Record<string, number>; operators: Record<string, string>; pin: 'latest' | 'safe' };
 export const LIMITS: Readonly<{ rangeBytes: number; maxFileBytes: number; maxManifestPaths: number; maxTokenId: bigint; maxCpuIndex: bigint }>;
 export const IMPL_SLOT: Hex;
 export const SEL: Readonly<Record<string, Hex>>;
@@ -132,10 +174,22 @@ export interface Rpc {
   many(reqs: RpcRequest[], opts?: ManyOptions): Promise<RpcOutcome[]>;
   calls(items: Array<{ to: Address; data: Hex }>, block: Hex | 'latest'): Promise<RpcOutcome[]>;
   storageAt(addr: Address, slot: Hex, block: Hex | 'latest'): Promise<RpcOutcome>;
-  /** A block height that at least `quorum` nodes already have (the `quorum`-th highest head minus 2), waiting `headGraceMs` for the other nodes. */
+  /** A block height that at least `quorum` nodes already have (the `quorum`-th highest head minus 2, or with pin 'safe' the `quorum`-th highest safe block), waiting `headGraceMs` for the other nodes. */
   pinBlock(): Promise<Hex>;
+  /** Blocks between the last pinned block and the highest head any operator reported (used for freshness checks). */
+  pinLag(): bigint;
+  pin: 'latest' | 'safe';
+  /** Current per-node batch size (shrinks when a node refuses batches; 1 = single requests). */
+  batchLimits(): Record<string, number>;
   getLogs(filter: object, opts?: ManyOptions): Promise<unknown[]>;
   stats(): Record<string, NodeStats>;
+}
+/** The multi-chain kernel's `rpc`: a summary across chains, not a full Rpc. */
+export interface MultiRpc {
+  readonly urls: string[];
+  quorum: number;
+  stats(): Record<string, NodeStats>;
+  forChain(chainId: number): Rpc;
 }
 export interface RpcOptions {
   urls: string[];
@@ -144,7 +198,9 @@ export interface RpcOptions {
   /** explicit operator label per URL; nodes of one operator count once */ operators?: Record<string, string>;
   /** default 10000 */ timeoutMs?: number;
   /** ask another node if no agreement within this time; default 1500 */ hedgeMs?: number;
-  /** default 40 */ maxBatch?: number;
+  /** default 20 */ maxBatch?: number;
+  /** per-node batch limit; a node that refuses a batch is also shrunk automatically down to single requests */ maxBatchByUrl?: Record<string, number>;
+  /** 'latest' (default) or 'safe' */ pin?: 'latest' | 'safe';
   fetchImpl?: typeof fetch;
   shuffle?: boolean;
   /** retries on 429 / 5xx / network errors; default 2 */ retries?: number;
@@ -195,9 +251,17 @@ export interface Resolution {
   path: string;
   block: Hex;
   chainId: number;
+  /** 'bnb' | 'xlayer' | 'base' */
+  network: string | null;
+  /** null on BNB */
+  area: number | null;
   stores: StoreCheck;
   status: SiteStatus;
   name?: string;
+  /** `4246.0`, `1.2.344` */
+  short?: string;
+  /** `#4246@0`, `#1@2.344` */
+  label?: string;
   url?: string;
   cpu?: bigint;
   cpuName?: string;
@@ -248,8 +312,10 @@ export interface Site {
 export interface WatchChange { changed: string[]; removed: string[]; added: boolean; fallbackChanged: boolean; count: number; block: Hex }
 
 export interface KernelOptions {
-  /** override any field of BSC_MAINNET */ network?: Partial<Network>;
-  rpcUrls?: string[];
+  /** single-chain kernel: override any field of BSC_MAINNET */ network?: Partial<Network>;
+  /** multi-chain kernel: which networks (default NETWORKS) */ networks?: readonly Network[];
+  /** array = BNB nodes only (legacy); object = per chain, keyed by chain id or key ('bnb' | 'xlayer' | 'base') */
+  rpcUrls?: string[] | Record<string, string[]>;
   quorum?: number;
   rpc?: Rpc;
   fetchImpl?: typeof fetch;
@@ -262,23 +328,33 @@ export interface KernelOptions {
 }
 
 export interface Kernel {
+  /** BNB network (the home network) */
   config: Network;
-  rpc: Rpc;
+  /** multi-chain kernel only */
+  networks?: readonly Network[];
+  /** multi-chain kernel only: the single-chain kernel of one network, or null */
+  kernelFor?(chainId: number): Kernel | null;
+  /** single-chain kernel: that chain's full Rpc. Multi-chain kernel: a summary only (all nodes' urls, stats) — use forChain(chainId) or kernelFor(chainId).rpc for reads */
+  rpc: Rpc | MultiRpc;
   cache: Cache;
   parseInput: typeof parseInput;
   /** Resolve any SPEC §2.4 input. All reads pinned to one block. Cached for resolveTtlMs unless `fresh`. */
-  resolve(input: string | ParsedInput, opts?: { fresh?: boolean; block?: Hex }): Promise<Resolution>;
+  /** Multi-chain: names go to the chain of their area code; container / processor#ID inputs are looked up on every chain
+   *  (a processor#ID that exists on two chains sharing a factory throws InputError 'input.ambiguous').
+   *  `chainId` forces one chain; `block` without `chainId` is only allowed for names. The pinned block must be at most maxBlockAgeSeconds old. */
+  resolve(input: string | ParsedInput, opts?: { fresh?: boolean; block?: Hex; chainId?: number }): Promise<Resolution>;
   manifest(res: Resolution, opts?: { block?: Hex }): Promise<Manifest>;
   /** Read one file directly (no handle). */
   getFile(res: Resolution, man: Manifest, requestedPath: string): Promise<GetFileResult>;
   openSite(res: Resolution, opts?: { block?: Hex }): Promise<Site>;
   /** Whole-site read for small sites; throws SiteError above the limits. */
   loadSite(res: Resolution, opts?: { maxBytes?: number; maxFiles?: number; onProgress?: (p: Progress) => void; block?: Hex }): Promise<{ manifest: Manifest; files: Map<string, SiteFile>; problems: Array<{ path: string; status: string }>; totalBytes: number; site: Site }>;
-  checkStores(block: Hex | 'latest'): Promise<StoreCheck>;
-  cpuIndexOf(circuits: Address, block: Hex | 'latest'): Promise<bigint | null>;
-  cpuAt(cpu: bigint | number, block: Hex | 'latest'): Promise<Address | null>;
+  /** multi-chain kernel: `opts.chainId` picks the chain (default BNB) */
+  checkStores(block: Hex | 'latest', opts?: { chainId?: number }): Promise<StoreCheck>;
+  cpuIndexOf(circuits: Address, block: Hex | 'latest', opts?: { chainId?: number }): Promise<bigint | null>;
+  cpuAt(cpu: bigint | number, block: Hex | 'latest', opts?: { chainId?: number }): Promise<Address | null>;
   /** DomainBinding.isLive(domain, container) — for verifying ordinary https pages. */
-  domainLive(domain: string, container: Address, opts?: { block?: Hex }): Promise<boolean>;
+  domainLive(domain: string, container: Address, opts?: { block?: Hex; chainId?: number }): Promise<boolean>;
   /** Poll known files for on-chain changes (public nodes rarely serve eth_getLogs). Returns stop(). */
   watch(site: Site, onChange: (c: WatchChange) => void | Promise<void>, opts?: { intervalMs?: number; maxPaths?: number; firstDelayMs?: number; onError?: (e: unknown) => void }): () => void;
   normalizePath: typeof normalizePath;
@@ -288,4 +364,6 @@ export interface Kernel {
   statusText: typeof statusText;
 }
 
+/** Multi-chain kernel by default; passing `network` or `rpc` gives a single-chain kernel. */
 export function createKernel(options?: KernelOptions): Kernel;
+export function createChainKernel(options?: KernelOptions): Kernel;

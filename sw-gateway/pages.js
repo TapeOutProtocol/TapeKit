@@ -11,15 +11,15 @@ const T = {
   files: { zh: '本次会话读到的文件', en: 'Files read this session' }, verified: { zh: '已与链上核对', en: 'verified against chain' },
   noHash: { zh: '未声明哈希（未校验）', en: 'no declared hash (unverified)' }, bad: { zh: '与链上不一致', en: 'mismatch with chain' },
   external: { zh: '链外资源', en: 'Off-chain references' }, externalNone: { zh: '静态扫描没有发现链外资源', en: 'Static scan found no off-chain references' },
-  blocked: { zh: '运行时拦截的链外请求', en: 'Off-chain requests blocked at runtime' }, blockedNone: { zh: '没有', en: 'none' },
-  allowed: { zh: '已放行的链外请求', en: 'Off-chain requests allowed' },
+  offchain: { zh: '运行时访问的链外地址', en: 'Off-chain addresses accessed at runtime' }, offchainNone: { zh: '没有', en: 'none' },
+  offchainHint: { zh: '链上网站可以访问链外的数据（接口、图片、视频流、钱包连接）；这里列出访问过的地址（不含查询参数）。', en: 'On-chain sites may reach off-chain data (APIs, images, video streams, wallet connections); addresses reached are listed here, without query strings.' },
+  blocked: { zh: '被拦下的链外代码', en: 'Off-chain code blocked' }, blockedNone: { zh: '没有', en: 'none' },
+  blockedHint: { zh: '网站的代码只能来自链上，从链外加载的脚本会被拦下。', en: 'Site code must come from the chain; scripts loaded from off-chain are blocked.' },
   pure: { zh: '100% 链上', en: '100% on-chain' }, notPure: { zh: '引用了链外资源', en: 'references off-chain resources' },
   nodes: { zh: '节点', en: 'Nodes' }, nodeOk: { zh: '成功', en: 'ok' }, nodeFail: { zh: '失败', en: 'failed' }, nodeRl: { zh: '限流', en: 'rate-limited' }, nodeMs: { zh: '最近耗时', en: 'last latency' }, nodeCool: { zh: '冷却中', en: 'cooling down' },
   quorum: { zh: '每次读取至少 {q} 家运营方给出相同结果才采用', en: 'Every read needs at least {q} independent operators to agree' },
   settings: { zh: '设置（只存在你的浏览器里）', en: 'Settings (stored only in your browser)' },
-  offchain: { zh: '允许这个网站发起链外请求', en: 'Allow this site to make off-chain requests' },
   devPreview: { zh: '开发预览：显示还没开通的名字（站长自测用）', en: 'Dev preview: show names that are not activated yet (for site owners)' },
-  rpcs: { zh: '节点列表（一行一个；留空用默认；不同运营方才算不同的票）', en: 'RPC nodes (one per line; empty = defaults; only different operators count as separate votes)' },
   lang: { zh: 'Language: English', en: '语言：中文' },
   save: { zh: '保存', en: 'Save' }, clearCache: { zh: '清空本机的链上文件缓存', en: 'Clear local on-chain file cache' },
   blockSite: { zh: '在本机屏蔽这个网站', en: 'Block this site on this device' }, unblockSite: { zh: '取消屏蔽', en: 'Unblock' },
@@ -27,7 +27,7 @@ const T = {
   back: { zh: '返回网站', en: 'Back to site' },
   unpaidTitle: { zh: '这个链上名字还没开通', en: 'This on-chain name is not activated' },
   unpaid1: { zh: '没有查到 {name} 的有效付费（这个名字或这个容器都没有），所以网关不显示它。', en: 'No valid payment was found for {name} (neither the name nor its container), so the gateway does not display it.' },
-  unpaid2: { zh: '开通方法：电路持有人调用付费合约 DomainBinding.bind("{name}", 容器, 月数)，每 30 天 0.08 BNB，最多预付 10 年。容器已经为域名付过费的自动算作开通。', en: 'To activate: the circuit holder calls DomainBinding.bind("{name}", container, months) — 0.08 BNB per 30 days, up to 10 years prepaid. A container that already paid for a domain counts as activated.' },
+  unpaid2: { zh: '开通方法：电路持有人在 {network} 上调用付费合约 DomainBinding.bind("{name}", 容器, 月数)，按 30 天付费（费用以合约为准），最多预付 10 年。容器已经为域名付过费的自动算作开通。', en: 'To activate: the circuit holder calls DomainBinding.bind("{name}", container, months) on {network}, paying per 30 days (the contract sets the fee), up to 10 years prepaid. A container that already paid for a domain counts as activated.' },
   cannotShow: { zh: '无法显示', en: 'Cannot display' },
   notFound: { zh: '404 · 链上没有这个文件', en: '404 · No such file on chain' },
   tooLarge: { zh: '文件超过上限，网关不读取', en: 'File exceeds the size limit; the gateway does not read it' },
@@ -36,7 +36,7 @@ const T = {
   badHost1: { zh: '网站子域名要写成「#ID-处理器编号」，例如 4246-0.{host}', en: 'The site subdomain must be "#ID-processor", e.g. 4246-0.{host}' },
   rpcFail: { zh: '节点不足，读不到链', en: 'Not enough nodes; cannot read the chain' },
   rpcFail1: { zh: '需要至少 {q} 家运营方给出相同结果。刚才的错误：{err}', en: 'At least {q} independent operators must agree. Last error: {err}' },
-  blockedReq: { zh: '这个请求指向链外，已被 tape 网关拦截。要放行请到网站状态页 /.tape/status 打开「允许链外请求」。', en: 'This request goes off-chain and was blocked by the tape gateway. To allow it, open /.tape/status and enable off-chain requests.' },
+  blockedReq: { zh: '这个请求指向链外，已被 tape 网关拦截。网关上的链上网站不能访问链外资源。', en: 'This request goes off-chain and was blocked by the tape gateway. On-chain sites on the gateway cannot reach off-chain resources.' },
   devBanner: { zh: '开发预览：这个名字还没开通，只有打开了开发预览的浏览器能看到', en: 'Dev preview: this name is not activated; only browsers with dev preview enabled can see it' },
   statusLink: { zh: '这个网站的状态页：', en: 'Status page for this site:' },
   notice: { zh: '链上数据是公开的；网关只显示已开通的名字。「已与链上核对」只说明字节与链上一致，不说明网站可信。', en: 'On-chain data is public; the gateway only displays activated names. "Verified" means the bytes match the chain, not that the site is trustworthy.' },
@@ -46,6 +46,8 @@ export const pickLocale = (acceptLanguage, override) => {
   if (override) return String(override).toLowerCase().startsWith('zh') ? 'zh' : 'en';
   return /^\s*zh|,\s*zh/i.test(String(acceptLanguage || '')) ? 'zh' : 'en';
 };
+const NETWORK_NAMES = { 56: 'BNB Chain', 196: 'X Layer', 8453: 'Base' };
+const networkName = (res) => NETWORK_NAMES[res && res.chainId] || 'BNB Chain';
 const fill = (s, v) => String(s).replace(/\{(\w+)\}/g, (m, k) => (v && k in v ? String(v[k]) : m));
 export const tr = (locale) => (k, v) => fill((T[k] || {})[locale] ?? (T[k] || {}).en ?? k, v);
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -85,11 +87,11 @@ const identityCard = (t, locale, res, extra = '') => {
 };
 
 /** 状态页：身份、文件校验、链外资源、拦截记录、节点、设置。 */
-export function statusPage({ locale, res, host, files, external, blocked, allowed, nodes, quorum, settings, blockedByUser, reportUrl, statusTextOf }) {
+export function statusPage({ locale, res, host, files, external, blocked, offchain = [], nodes, quorum, settings, blockedByUser, reportUrl, statusTextOf }) {
   const t = tr(locale);
   const st = res ? { ...res, statusText: statusTextOf ? statusTextOf(res.status) : res.status } : null;
   const nOk = files.filter((f) => f.status === 'ok').length, nNo = files.filter((f) => f.status === 'no-hash').length, nBad = files.filter((f) => f.status !== 'ok' && f.status !== 'no-hash').length;
-  const pure = external.length === 0 && blocked.length === 0 && allowed.length === 0;
+  const pure = external.length === 0 && blocked.length === 0 && offchain.length === 0;
   const fileRows = files.slice(0, 200).map((f) => `<tr><td class="mono">${esc(f.path)}</td><td>${fmtBytes(f.size || 0)}</td><td>${f.status === 'ok' ? `<span class="chip ok">${t('verified')}</span>` : f.status === 'no-hash' ? `<span class="chip warn">${t('noHash')}</span>` : `<span class="chip bad">${esc(f.status)}</span>`}</td></tr>`).join('');
   const nodeRows = Object.entries(nodes).map(([u, s]) => `<tr><td class="mono">${esc(u)}</td><td>${s.ok}</td><td>${s.fail}</td><td>${s.rateLimited}${s.cooldownUntil > Date.now() ? ` <span class="chip warn">${t('nodeCool')}</span>` : ''}</td><td>${s.lastMs == null ? '' : s.lastMs + ' ms'}</td><td class="hint">${esc(s.lastError || '')}</td></tr>`).join('');
   const list = (items, none) => (items.length ? `<ul>${items.slice(0, 100).map((x) => `<li class="mono">${esc(typeof x === 'string' ? x : x.url)}${x.path ? ` <span class="hint">← ${esc(x.path)}</span>` : ''}${x.where ? ` <span class="hint">(${esc(x.where)})</span>` : ''}</li>`).join('')}</ul>` : `<p class="hint">${none}</p>`);
@@ -102,14 +104,13 @@ ${st && st.status === 'ok' ? `
 <div class="card"><p class="row"><span class="chip ${nBad ? 'bad' : 'ok'}">${nOk} ${t('verified')}</span>${nNo ? `<span class="chip warn">${nNo} ${t('noHash')}</span>` : ''}${nBad ? `<span class="chip bad">${nBad} ${t('bad')}</span>` : ''}<span class="chip ${pure ? 'ok' : 'warn'}">${pure ? t('pure') : t('notPure')}</span></p>
 ${files.length ? `<table><tr><th>path</th><th>size</th><th></th></tr>${fileRows}</table>` : ''}</div>
 <h2>${t('external')}</h2><div class="card">${list(external, t('externalNone'))}</div>
-<h2>${t('blocked')}</h2><div class="card">${list(blocked, t('blockedNone'))}${allowed.length ? `<p><b>${t('allowed')}</b></p>${list(allowed, '')}` : ''}</div>` : ''}
+<h2>${t('offchain')}</h2><div class="card"><p class="hint">${t('offchainHint')}</p>${list(offchain, t('offchainNone'))}</div>
+<h2>${t('blocked')}</h2><div class="card"><p class="hint">${t('blockedHint')}</p>${list(blocked, t('blockedNone'))}</div>` : ''}
 <h2>${t('nodes')}</h2>
 <div class="card"><p class="hint">${t('quorum', { q: quorum })}</p><table><tr><th>URL</th><th>${t('nodeOk')}</th><th>${t('nodeFail')}</th><th>${t('nodeRl')}</th><th>${t('nodeMs')}</th><th></th></tr>${nodeRows}</table></div>
 <h2>${t('settings')}</h2>
 <div class="card"><form method="post" action="/.tape/settings">
-<label><input type="checkbox" name="offchain" value="1" ${settings.offchain ? 'checked' : ''}> ${t('offchain')}</label>
 <label><input type="checkbox" name="devPreview" value="1" ${settings.devPreview ? 'checked' : ''}> ${t('devPreview')}</label>
-<label>${t('rpcs')}<textarea name="rpcs" rows="4">${esc((settings.rpcUrls || []).join('\n'))}</textarea></label>
 <input type="hidden" name="back" value="/.tape/status">
 <div class="row"><button class="primary" type="submit">${t('save')}</button>
 <button type="submit" name="action" value="lang">${t('lang')}</button>
@@ -127,7 +128,7 @@ export function messagePage({ locale, kind, res, host, vars = {}, statusTextOf }
   const st = res ? { ...res, statusText: statusTextOf ? statusTextOf(res.status) : res.status } : null;
   let title, html = '';
   switch (kind) {
-    case 'unpaid': title = t('unpaidTitle'); html = `<p>${t('unpaid1', { name: esc(res.name) })}</p><p class="hint">${t('unpaid2', { name: esc(res.name) })}</p>`; break;
+    case 'unpaid': title = t('unpaidTitle'); html = `<p>${t('unpaid1', { name: esc(res.name) })}</p><p class="hint">${t('unpaid2', { name: esc(res.name), network: esc(networkName(res)) })}</p>`; break;
     case 'status': title = t('cannotShow'); html = `<p>${esc(st.statusText)}</p>`; break;
     case 'not-found': title = t('notFound'); html = `<p><a href="/">${t('back')}</a></p>`; break; // 路径任何人都能构造，不回显，免得在知名网站名下显示攻击者的文字
     case 'too-large': title = t('tooLarge'); html = `<p class="mono">${esc(vars.path || '')}</p>`; break;

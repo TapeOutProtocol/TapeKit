@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { parseInput } from '../../../../kernel/src/name.js';
+import { parseInput, formatShort, formatHostLabel } from '../../../../kernel/src/name.js';
 import { IconBack, IconForward, IconReload, IconShield, IconHome } from '../icons';
 import { isNative, platform, type DesktopBrowserState } from '../platform';
 import { onWalletModal } from '../wallet/config';
@@ -10,7 +10,7 @@ import { resolveSite, type SiteSummary } from '../data/chain';
 //   链上名字：桌面版交给主进程的 tape:// 协议（真实独立来源）；网页版和手机版走 tapekit.org 网关子域
 //   （同样是独立来源，文件由网关页面里的 Service Worker 在本地读链、逐个校验）。
 //   普通网址：桌面版照常打开；其它平台在新窗口打开（大多数网站禁止被嵌入）。
-type Target = { kind: 'tape'; tokenId: bigint; cpu: bigint; path: string; display: string } | { kind: 'web'; url: string; display: string };
+type Target = { kind: 'tape'; tokenId: bigint; cpu: bigint; area: number | null; path: string; display: string } | { kind: 'web'; url: string; display: string };
 
 function toTarget(raw: string): Target | null {
   const s = raw.trim();
@@ -19,7 +19,7 @@ function toTarget(raw: string): Target | null {
     const p = parseInput(s);
     if (p.kind === 'name') {
       const path = p.path || '';
-      return { kind: 'tape', tokenId: p.tokenId, cpu: p.cpu, path, display: `${p.tokenId}.${p.cpu}${path ? '/' + path : ''}` };
+      return { kind: 'tape', tokenId: p.tokenId, cpu: p.cpu, area: p.area, path, display: `${formatShort(p.tokenId, p.cpu, p.area)}${path ? '/' + path : ''}` };
     }
   } catch {
     // 不是链上名字，继续按网址处理
@@ -29,7 +29,9 @@ function toTarget(raw: string): Target | null {
   return null;
 }
 
-const gatewayUrl = (x: Extract<Target, { kind: 'tape' }>) => `https://${x.tokenId}-${x.cpu}.tapekit.org/${x.path}`;
+// 网关子域：4246-0.tapekit.org、1-2-344.tapekit.org（X Layer）
+const gatewayOrigin = (x: Extract<Target, { kind: 'tape' }>) => `https://${formatHostLabel(x.tokenId, x.cpu, x.area)}.tapekit.org`;
+const gatewayUrl = (x: Extract<Target, { kind: 'tape' }>) => `${gatewayOrigin(x)}/${x.path}`;
 
 
 export function BrowserView({ active }: { active: boolean }) {
@@ -94,7 +96,7 @@ function FrameBrowser({ native }: { native: boolean }) {
     setError('');
     if (!current || current.kind !== 'tape') return;
     setLoading(true);
-    resolveSite(`${current.tokenId}.${current.cpu}`)
+    resolveSite(formatShort(current.tokenId, current.cpu, current.area))
       .then((s) => { if (!cancelled) setSummary(s); })
       .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -154,7 +156,7 @@ function FrameBrowser({ native }: { native: boolean }) {
               <span className="spinner" />
               <iframe
                 key={`warm:${gatewayUrl(current)}`}
-                src={`https://${current.tokenId}-${current.cpu}.tapekit.org/.tape/status`}
+                src={`${gatewayOrigin(current)}/.tape/status`}
                 title="warm-up"
                 aria-hidden
                 tabIndex={-1}
@@ -255,15 +257,15 @@ function DesktopBrowser({ active }: { active: boolean }) {
   }, [api, active, state?.url, home]);
 
   const tape = state?.tape;
-  const blocked = tape?.offchainBlocked?.length ?? 0;
+  const offchain = tape?.offchain?.length ?? 0;
   let badge = null;
   if (state?.loading) badge = <span className="chip"><span className="spinner" style={{ width: 12, height: 12 }} />{t('loading')}</span>;
   else if (tape?.unverified?.length || tape?.page === 'unverified') badge = <span className="chip bad">{t('verifyFailed')}</span>;
   // 只有"当前页面本身是校验通过的链上文件"才显示已验证；404、出错页、状态页都不算
   else if (tape?.status === 'ok' && tape.page === 'verified') {
     badge = (
-      <span className="chip ok" title={blocked ? tape.offchainBlocked!.join('\n') : undefined}>
-        <IconShield />{t('verified')}{blocked ? ` ${t('offchainBlocked').replace('{n}', String(blocked))}` : ''}
+      <span className="chip ok" title={offchain ? tape.offchain!.join('\n') : undefined}>
+        <IconShield />{t('verified')}{offchain ? ` ${t('offchainAccessed').replace('{n}', String(offchain))}` : ''}
       </span>
     );
   } else if (tape?.status === 'ok') badge = <span className="chip warn">{tape.page === 'not-found' ? t('pageNotFound') : t('pageError')}</span>;

@@ -64,3 +64,32 @@ test('finalized block is at or below the latest block', async () => {
   assert.ok(f <= latest + 5n);
   assert.ok(latest - f < 1000n, 'finalized is recent');
 });
+
+// ---------------------------------------------------------------- Base、X Layer（2026-09-19 启用）
+import { createTapeSendChains, hubImplementationsFor } from '../src/chain.js';
+const l2 = createTapeSendChains();
+
+for (const [id, name] of [[8453, 'Base'], [196, 'X Layer']]) {
+  test(`${name}: nodes agree on the chain, hub implementation is on the allow-list, factory not sealed yet`, async () => {
+    const c = l2.get(id);
+    await c.assertChain();
+    const block = await c.rpc.pinBlock();
+    const [hub, factory] = await Promise.all([c.hubStatus(block), c.factoryStatus(block)]);
+    assert.equal(hub.implementation, hubImplementationsFor(id)[0]);
+    assert.equal(hub.expectedImplementation, true);
+    assert.equal(hub.sealed, false);
+    assert.equal(hub.owner, '0x571d447f4f24688ec35ccf07f1d6993655f6af15');
+    assert.equal(factory.factoryImplementation, c.factorySeal.implementation, 'factory implementation slot matches the pinned value');
+    assert.equal(factory.beaconOwner, c.network.factory, 'circuit beacon is owned by the factory');
+    assert.equal(factory.circuitsIntact, true);
+    const F = await c.finalizedBlock();
+    assert.ok(F === null || F <= BigInt(block) + 1000n);
+  });
+  test(`${name}: a name with the right area code resolves on that chain; names for other chains are refused`, async () => {
+    const c = l2.get(id);
+    const area = id === 196 ? 2 : 3;
+    const r = await c.resolveEndpoint(`#1@${area}.0`);
+    assert.ok(['ok', 'not-opened', 'no-such-cpu', 'no-such-token'].includes(r.status), r.status);
+    await assert.rejects(c.resolveEndpoint('#4246@0'));
+  });
+}

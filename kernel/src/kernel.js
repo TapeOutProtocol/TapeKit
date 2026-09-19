@@ -4,11 +4,11 @@
 // 本版新增：可插拔持久缓存（文件按链上 sha 内容寻址、处理器编号表、解析结果短缓存）、按需读取（openSite）、
 // 链上更新监听（watch）、双语文案（i18n）。
 
-import { BSC_MAINNET, IMPL_SLOT, LIMITS } from './config.js';
-import { createRpc } from './rpc.js';
+import { BSC_MAINNET, IMPL_SLOT, LIMITS, NETWORKS, HOME_NETWORK, networkByArea, rpcOptionsFor } from './config.js';
+import { createRpc, RpcError } from './rpc.js';
 import { createIdentity } from './identity.js';
 import { SEL } from './selectors.js';
-import { parseInput, formatUrl } from './name.js';
+import { parseInput, formatUrl, formatShort, formatLabel, InputError } from './name.js';
 import { normalizePath, resolvePath, safeContentType } from './path.js';
 import { sha256Hex } from './sha.js';
 import { keccakHex } from './keccak.js';
@@ -36,6 +36,111 @@ const freeze = (r) => JSON.parse(JSON.stringify(r, (k, v) => (typeof v === 'bigi
 const thaw = (r) => JSON.parse(JSON.stringify(r), (k, v) => (v && typeof v === 'object' && '$big' in v ? BigInt(v.$big) : v));
 
 /**
+ * 多链内核（默认）：每条链一个子内核，按名字里的区号选链（没有区号 = BNB）；容器地址、处理器合约#ID 这两种写法
+ * 不带链的信息，就在所有链上同时查，取真正属于那条链的结果（容器的 token() 里写着链号，冒充不了）。
+ * 解析结果 res 带 chainId，之后 openSite / manifest / getFile / watch 都自动交给那条链的子内核。
+ *
+ * 传 network 或 rpc 时退回单链内核（旧用法，测试用）。
+ * rpcUrls：数组 = 只替换 BNB 的节点（旧用法）；对象 = 按链号或链名（bnb / xlayer / base）分别替换。
+ *
+ * @param {Parameters<typeof createChainKernel>[0] & { networks?: typeof NETWORKS, rpcUrls?: string[] | Record<string, string[]> }} [options]
+ */
+export function createKernel(options = {}) {
+  if (options.network || options.rpc) return createChainKernel(options);
+  if (options.locale) setLocale(options.locale);
+  const nets = options.networks || NETWORKS;
+  const cache = options.cache || createMemoryCache({ maxBytes: options.cacheBytes ?? 64 * 1024 * 1024 });
+  const urlsFor = (net) => {
+    const r = options.rpcUrls;
+    if (!r) return undefined;
+    if (Array.isArray(r)) return net.chainId === HOME_NETWORK.chainId && r.length ? r : undefined;
+    const u = r[net.chainId] || r[String(net.chainId)] || r[net.key];
+    return u && u.length ? u : undefined;
+  };
+  const kernels = new Map(nets.map((net) => [net.chainId, createChainKernel({ ...options, locale: undefined, network: net, cache, rpcUrls: urlsFor(net) })]));
+  const home = kernels.get(HOME_NETWORK.chainId) || kernels.values().next().value;
+  /** 某条链的子内核；不认识的链返回 null */
+  const kernelFor = (chainId) => kernels.get(Number(chainId)) || null;
+  const mustKernel = (chainId) => {
+    const k = kernelFor(chainId);
+    if (!k) throw new SiteError('chain', 'site.chain-call', { what: `chain ${chainId}` });
+    return k;
+  };
+
+  async function resolve(input, opts = {}) {
+    const parsed = typeof input === 'string' ? parseInput(input) : input;
+    if (opts.chainId !== undefined) return mustKernel(opts.chainId).resolve(input, opts);
+    if (parsed.kind === 'name') {
+      const net = networkByArea(parsed.area);
+      const k = net && kernelFor(net.chainId);
+      if (!k) throw new InputError('input.area', { value: String(parsed.area) });
+      return k.resolve(input, opts);
+    }
+    // 容器地址 / 处理器合约#ID：所有链同时查（不带链信息的写法）。同一个区块号在别的链上没有意义
+    if (opts.block) throw new InputError('input.needs-chain', {});
+    const list = [...kernels.values()];
+    const isFound = (v) => !['not-tapeout', 'store-changed'].includes(v.status);
+    const tasks = list.map((k) => k.resolve(input, opts).then((v) => ({ k, ok: true, v }), (e) => ({ k, ok: false, e })));
+    if (parsed.kind === 'container') {
+      // 容器地址里含链号，只可能属于一条链：哪条链先确认身份成立就立刻用它，不等最慢的链
+      const first = await new Promise((done) => {
+        let left = tasks.length;
+        for (const t of tasks) t.then((x) => { if (x.ok && isFound(x.v)) done(x); else if (--left === 0) done(null); });
+      });
+      if (first) return first.v;
+    }
+    const got = await Promise.all(tasks);
+    const found = got.filter((x) => x.ok && isFound(x.v));
+    if (parsed.kind === 'circuit') {
+      // 处理器地址只在"同一个工厂"的链之间可能相同（两条 L2 的工厂地址、部署顺序相同；BNB 的工厂不同）。
+      // 同一工厂的链里：两条都成立 → 歧义，不替用户选；有链读失败或因实现变了没法核对 → 不能确定它不在那条链上，不猜
+      const factoryOf = (x) => String(x.k.config.factory).toLowerCase();
+      for (const f of found) {
+        const peers = got.filter((x) => x !== f && factoryOf(x) === factoryOf(f));
+        const clash = peers.filter((x) => x.ok && isFound(x.v));
+        if (clash.length) throw new InputError('input.ambiguous', { chains: [f, ...clash].map((x) => x.k.config.name).join(' / ') });
+        const unsure = peers.find((x) => !x.ok || x.v.status === 'store-changed');
+        if (unsure) { if (!unsure.ok) throw unsure.e; return unsure.v; }
+      }
+    }
+    if (found.length > 1) throw new InputError('input.ambiguous', { chains: found.map((x) => x.k.config.name).join(' / ') });
+    if (found.length === 1) return found[0].v;
+    // 哪条链都没找到：有链因为合约实现变了没法核对，就报那条（拒绝显示，而不是说"不是 TapeOut"）；
+    // 有链读失败（节点问题）时不能断言"不是 TapeOut"：那条链上可能就是它
+    const changed = got.find((x) => x.ok && x.v.status === 'store-changed');
+    if (changed) return changed.v;
+    const failed = got.find((x) => !x.ok);
+    if (failed) throw failed.e;
+    const home = got.find((x) => x.k.config.chainId === HOME_NETWORK.chainId) || got[0];
+    return home.v;
+  }
+
+  const byRes = (res) => mustKernel(res.chainId ?? HOME_NETWORK.chainId);
+  // 汇总各链节点：状态页、CSP 放行的节点来源用。每条链自己的节点在 kernelFor(chainId).rpc
+  const rpc = {
+    get urls() { return [...new Set([...kernels.values()].flatMap((k) => k.rpc.urls))]; },
+    quorum: home.rpc.quorum,
+    stats: () => Object.assign({}, ...[...kernels.values()].map((k) => k.rpc.stats())),
+    forChain: (chainId) => mustKernel(chainId).rpc,
+  };
+
+  return {
+    config: home.config, networks: nets, kernelFor, rpc, cache, parseInput, resolve,
+    manifest: (res, o) => byRes(res).manifest(res, o),
+    getFile: (res, man, p) => byRes(res).getFile(res, man, p),
+    openSite: (res, o) => byRes(res).openSite(res, o),
+    loadSite: (res, o) => byRes(res).loadSite(res, o),
+    watch: (site, onChange, o) => byRes(site.res).watch(site, onChange, o),
+    checkStores: (block, o = {}) => mustKernel(o.chainId ?? HOME_NETWORK.chainId).checkStores(block),
+    domainLive: (domain, container, o = {}) => mustKernel(o.chainId ?? HOME_NETWORK.chainId).domainLive(domain, container, o),
+    cpuIndexOf: (circuits, block, o = {}) => mustKernel(o.chainId ?? HOME_NETWORK.chainId).cpuIndexOf(circuits, block),
+    cpuAt: (cpu, block, o = {}) => mustKernel(o.chainId ?? HOME_NETWORK.chainId).cpuAt(cpu, block),
+    normalizePath, resolvePath, setLocale, getLocale, statusText,
+  };
+}
+
+/**
+ * 单链内核。
  * @param {{
  *   network?: Partial<typeof BSC_MAINNET>, rpcUrls?: string[], quorum?: number, rpc?: ReturnType<typeof createRpc>,
  *   fetchImpl?: typeof fetch, isBlocked?: (x:{container:string,name:string}) => Promise<boolean>|boolean,
@@ -43,10 +148,10 @@ const thaw = (r) => JSON.parse(JSON.stringify(r), (k, v) => (v && typeof v === '
  *   resolveTtlMs?: number, skipImplCheck?: boolean, locale?: string,
  * }} [options]
  */
-export function createKernel(options = {}) {
+export function createChainKernel(options = {}) {
   if (options.locale) setLocale(options.locale);
   const net = { ...BSC_MAINNET, ...(options.network || {}) };
-  const rpc = options.rpc || createRpc({ urls: options.rpcUrls || net.rpcs, quorum: options.quorum, fetchImpl: options.fetchImpl });
+  const rpc = options.rpc || createRpc({ ...rpcOptionsFor(net, options.rpcUrls), quorum: options.quorum, fetchImpl: options.fetchImpl });
   const isBlocked = options.isBlocked || (() => false);
   const cache = options.cache || createMemoryCache({ maxBytes: options.cacheBytes ?? 64 * 1024 * 1024 });
   const resolveTtl = options.resolveTtlMs ?? 60_000;
@@ -91,9 +196,22 @@ export function createKernel(options = {}) {
     return res;
   }
 
+  /**
+   * 钉块并检查它够不够新：钉住的块比"各运营方报的最高块"落后太多就拒绝。
+   * 只有两三家运营方的链上，一家报很旧的高度就能把钉块压到过去、读到旧网站。
+   * 按块数比较，不看本机时钟（电脑时间不准时不会误报），也不多一次往返
+   */
+  async function pinFresh() {
+    const block = await rpc.pinBlock();
+    const max = net.maxPinLagBlocks;
+    const lag = typeof rpc.pinLag === 'function' ? rpc.pinLag() : 0n;
+    if (max && lag > BigInt(max)) throw new RpcError('rpc.stale', { n: String(lag) });
+    return block;
+  }
+
   async function resolveUncached(parsed, input, opts) {
-    const block = opts.block || (await rpc.pinBlock());
-    const res = { input, path: parsed.path, block, chainId: net.chainId };
+    const block = opts.block || (await pinFresh());
+    const res = { input, path: parsed.path, block, chainId: net.chainId, network: net.key || null, area: net.area ?? null };
 
     // 仓库实现核对与身份解析的第一步合成一次多节点请求；实现不在钉住名单里就不再往下读
     const addrs = storeAddrs();
@@ -106,7 +224,8 @@ export function createKernel(options = {}) {
 
     const { name, container, tokenId, cpu } = id;
     const base = {
-      ...res, name, url: formatUrl(tokenId, cpu, parsed.path), cpu, cpuName: id.cpuName,
+      ...res, name, url: formatUrl(tokenId, cpu, parsed.path, net.nameSuffix, net.area), short: formatShort(tokenId, cpu, net.area),
+      label: formatLabel(tokenId, cpu, net.area), cpu, cpuName: id.cpuName,
       circuits: id.circuits, tokenId, container, holder: id.holder, opened: id.opened, paid: false, paidUntil: 0n, paidVia: null,
     };
     if (id.status === 'no-such-token') return { ...base, status: 'no-such-token' };
@@ -280,7 +399,7 @@ export function createKernel(options = {}) {
 
   /** 普通域名（经网关访问）是否为这个容器付费有效：DomainBinding.isLive(域名, 容器)。扩展校验当前网页时用。 */
   async function domainLive(domain, container, opts = {}) {
-    const block = opts.block || (await rpc.pinBlock());
+    const block = opts.block || (await pinFresh());
     const r = await one({ to: net.binding, sel: SEL.isLive, types: ['string', 'address'], values: [String(domain).toLowerCase(), container], out: ['bool'] }, block);
     return !r.revert && r[0] === true;
   }
@@ -313,7 +432,7 @@ export function createKernel(options = {}) {
     const tick = async () => {
       if (stopped) return;
       try {
-        const block = await rpc.pinBlock();
+        const block = await pinFresh();
         const snap = await snapshot(block);
         if (!primed) { primed = true; for (const [p, v] of snap.files) known.set(p, v); count = snap.count; fallback = snap.fallback; }
         else {

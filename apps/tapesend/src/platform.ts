@@ -26,7 +26,7 @@ export interface DesktopBrowserState {
   loading: boolean;
   canBack: boolean;
   canForward: boolean;
-  tape: { status: string; statusText?: string; verified?: number; files?: number; block?: string | number; unverified?: string[]; page?: string | null; offchainBlocked?: string[] } | null;
+  tape: { status: string; statusText?: string; verified?: number; files?: number; block?: string | number; unverified?: string[]; page?: string | null; offchain?: string[] } | null;
 }
 
 export type Platform = 'web' | 'electron' | 'ios' | 'android';

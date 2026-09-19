@@ -40,11 +40,31 @@ const CHAINS = {
   },
   8453: {
     name: 'Base', short: 'base', hex: '0x2105', currency: 'ETH',
-    rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org', tapeout: null,
+    // TapeOut 主协议 2026-09-19 部署（与 X Layer 地址相同，f15 同 nonce 部署），只读核对 66 项通过
+    rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org',
+    tapeout: {
+      registry: '0x000000006551c19487814612e58FE06813775758',
+      implementation: '0xAC4F791353eE9F06e2C50Ae4C34680D28Ea52a57',
+      factory: '0x1f09DAeFA827f02CBb40967cc91b259763760761',
+      payments: '0x13b8AFa4Fd1b29B09D23A57A75ba8D3078d44858',
+      circuitBeacon: '0xf70d1ed4f62CF3780157B0b421b7E2F45bD0991C',
+      circuitImplementation: '0x977f217887E085D298Cb3819cDAD5A0ee35F29B2',
+      circuitCodehash: '0x57aa306fd0be97087da3534e03398f5ff4efd533b5be4e45a405ce86fa6717d5',
+    },
   },
   196: {
     name: 'X Layer', short: 'xlayer', hex: '0xc4', currency: 'OKB',
-    rpc: 'https://rpc.xlayer.tech', explorer: 'https://www.oklink.com/xlayer', tapeout: null,
+    // TapeOut 主协议 2026-09-19 部署（与 Base 地址相同），只读核对 66 项通过
+    rpc: 'https://rpc.xlayer.tech', explorer: 'https://www.oklink.com/xlayer',
+    tapeout: {
+      registry: '0x000000006551c19487814612e58FE06813775758',
+      implementation: '0xAC4F791353eE9F06e2C50Ae4C34680D28Ea52a57',
+      factory: '0x1f09DAeFA827f02CBb40967cc91b259763760761',
+      payments: '0x13b8AFa4Fd1b29B09D23A57A75ba8D3078d44858',
+      circuitBeacon: '0xf70d1ed4f62CF3780157B0b421b7E2F45bD0991C',
+      circuitImplementation: '0x977f217887E085D298Cb3819cDAD5A0ee35F29B2',
+      circuitCodehash: '0x57aa306fd0be97087da3534e03398f5ff4efd533b5be4e45a405ce86fa6717d5',
+    },
   },
 };
 
@@ -162,7 +182,7 @@ const BOOT_DATA=${JSON.stringify(SALT_BOOT + bootCreation.slice(2))};
 const PROXY_SALT=${JSON.stringify(SALT_PROXY)};
 const PROXY_CREATION=${JSON.stringify(proxyCreation)};
 const CHAINS=${JSON.stringify(chainData)};
-const FACTORY_IMPL={56:'0xa68ccf4931d98ad0a4be15ee40542edc0dec6422'};
+const FACTORY_IMPL={56:'0xa68ccf4931d98ad0a4be15ee40542edc0dec6422',8453:'0x74956236ab64ed143933040b4137e8a352e4d17b',196:'0x74956236ab64ed143933040b4137e8a352e4d17b'};
 const SEL={registry:'0x7b103999',accountImplementation:'0x11464fbe',factory:'0xc45a0155',payments:'0xa6d23e10',circuitBeacon:'0xddcb22fa',circuitImplementation:'0x14f96a60'};
 const IMPL_SLOT='0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
 const $=(id)=>document.getElementById(id);

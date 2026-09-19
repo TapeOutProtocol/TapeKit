@@ -3,7 +3,7 @@ import { t } from '../i18n';
 import { IconClose } from '../icons';
 import {
   type AssetDraft, type Attachment, type AttachmentCheck, type Endpoint, type Hex, type Message, type TokenInfo,
-  erc20Balance, firstClaim, formatUnits, isCircuitContract, lookalikeToken, nativeBalance, nftOwner, onClaims, parseUnits, short, tokenInfo, verifyAttachment,
+  erc20Balance, firstClaim, formatUnits, isCircuitContract, lookalikeToken, nativeBalance, nativeSymbol, nftOwner, onClaims, parseUnits, short, tokenInfo, verifyAttachment,
 } from '../data/tapesend';
 
 export type AssetKind = 'native' | 'erc20' | 'erc721' | 'bem';
@@ -18,10 +18,11 @@ export type ComposeItem =
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
-/** 选代币 / NFT / BNB：读合约信息、余额或所有权，确认后加进附件（此时还没有转账） */
-export function AssetDialog({ kind: rawKind, wallet, recipient, onAdd, onClose }: {
-  kind: AssetKind; wallet: Hex; recipient: Endpoint | null; onAdd: (draft: AssetDraft, label: string) => void; onClose: () => void;
+/** 选代币 / NFT / 原生币：读合约信息、余额或所有权，确认后加进附件（此时还没有转账）。chainId 是发件人那条链：资产在那条链上转 */
+export function AssetDialog({ kind: rawKind, wallet, recipient, chainId, onAdd, onClose }: {
+  kind: AssetKind; wallet: Hex; recipient: Endpoint | null; chainId: number; onAdd: (draft: AssetDraft, label: string) => void; onClose: () => void;
 }) {
+  const native = nativeSymbol(chainId);
   // BEM 就是一个固定了合约地址的代币
   const kind: 'native' | 'erc20' | 'erc721' = rawKind === 'bem' ? 'erc20' : rawKind;
   const fixedToken = rawKind === 'bem' ? BEM_TOKEN : null;
@@ -35,42 +36,42 @@ export function AssetDialog({ kind: rawKind, wallet, recipient, onAdd, onClose }
   useEffect(() => {
     if (kind !== 'erc721' || !ADDRESS.test(token.trim())) { setIsCircuit(null); return; }
     let alive = true;
-    void isCircuitContract(token.trim()).then((v) => alive && setIsCircuit(v));
+    void isCircuitContract(token.trim(), chainId).then((v) => alive && setIsCircuit(v));
     return () => { alive = false; };
-  }, [kind, token]);
+  }, [kind, token, chainId]);
 
   useEffect(() => {
     let alive = true;
     if (kind === 'native') {
-      setInfo({ symbol: 'BNB', name: 'BNB', decimals: 18 });
-      void nativeBalance(wallet).then((b) => alive && setBalance(b));
+      setInfo({ symbol: native, name: native, decimals: 18 });
+      void nativeBalance(wallet, chainId).then((b) => alive && setBalance(b));
       return () => { alive = false; };
     }
     if (!ADDRESS.test(token.trim())) { setInfo(null); setBalance(null); return; }
     setInfo('loading');
-    void tokenInfo(kind, token.trim()).then((i) => alive && setInfo(i ?? 'bad'));
-    if (kind === 'erc20') void erc20Balance(token.trim(), wallet).then((b) => alive && setBalance(b));
+    void tokenInfo(kind, token.trim(), chainId).then((i) => alive && setInfo(i ?? 'bad'));
+    if (kind === 'erc20') void erc20Balance(token.trim(), wallet, chainId).then((b) => alive && setBalance(b));
     return () => { alive = false; };
-  }, [kind, token, wallet]);
+  }, [kind, token, wallet, chainId, native]);
 
   useEffect(() => {
     if (kind !== 'erc721' || !ADDRESS.test(token.trim()) || !/^\d{1,78}$/.test(tokenId.trim())) { setOwner(null); return; }
     let alive = true;
     setOwner('loading');
-    void nftOwner(token.trim(), tokenId.trim()).then((o) => alive && setOwner(o));
+    void nftOwner(token.trim(), tokenId.trim(), chainId).then((o) => alive && setOwner(o));
     return () => { alive = false; };
-  }, [kind, token, tokenId]);
+  }, [kind, token, tokenId, chainId]);
 
   const ti = info && info !== 'loading' && info !== 'bad' ? info : null;
   const units = ti && kind !== 'erc721' ? parseUnits(amount, ti.decimals) : null;
   const enough = units !== null && balance !== null && units <= balance;
   const ownsNft = kind === 'erc721' && typeof owner === 'string' && owner === wallet.toLowerCase();
-  const lookalike = ti && kind !== 'native' ? lookalikeToken(ti.symbol, token.trim()) : false;
+  const lookalike = ti && kind !== 'native' ? lookalikeToken(ti.symbol, token.trim(), chainId) : false;
   const ok = kind === 'erc721' ? Boolean(ti) && ownsNft && isCircuit === false : Boolean(ti) && units !== null && units > 0n && enough;
 
   const add = () => {
     if (!ok || !ti) return;
-    if (kind === 'native') onAdd({ type: 'native', amount: units!.toString() }, `${amount.trim()} BNB`);
+    if (kind === 'native') onAdd({ type: 'native', amount: units!.toString() }, `${amount.trim()} ${native}`);
     else if (kind === 'erc20') onAdd({ type: 'erc20', token: token.trim().toLowerCase() as Hex, amount: units!.toString() }, `${amount.trim()} ${ti.symbol || t('attachToken')}`);
     else onAdd({ type: 'erc721', token: token.trim().toLowerCase() as Hex, tokenId: tokenId.trim() }, `${ti.symbol || 'NFT'} #${tokenId.trim()}`);
   };
@@ -78,7 +79,7 @@ export function AssetDialog({ kind: rawKind, wallet, recipient, onAdd, onClose }
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog">
-        <h3>{rawKind === 'bem' ? 'BEM' : kind === 'native' ? t('attachNative') : kind === 'erc20' ? t('attachToken') : t('attachNft')}</h3>
+        <h3>{rawKind === 'bem' ? 'BEM' : kind === 'native' ? native : kind === 'erc20' ? t('attachToken') : t('attachNft')}</h3>
         <p className="hint">{t('attachAssetIntro')}</p>
         {recipient && !recipient.opened ? <div className="notice warn" style={{ marginBottom: 10 }}>{t('attachRecipientUnopened')}</div> : null}
         {kind !== 'native' && !fixedToken ? (
@@ -145,20 +146,21 @@ function AssetRow({ a, m, repeat }: { a: Exclude<Attachment, { type: 'image' }>;
   // 本机"首次引用"记录变了（别的消息核对通过）就重新判断是不是重复引用
   const [, setClaimTick] = useState(0);
   useEffect(() => onClaims(() => setClaimTick((n) => n + 1)), []);
-  const [info, setInfo] = useState<TokenInfo | null>(a.type === 'native' ? { symbol: 'BNB', name: 'BNB', decimals: 18 } : null);
+  // 资产在附件声明的那条链上（核对时要求它就是消息所在的链）
+  const [info, setInfo] = useState<TokenInfo | null>(a.type === 'native' ? { symbol: nativeSymbol(a.chainId), name: nativeSymbol(a.chainId), decimals: 18 } : null);
   useEffect(() => {
     let alive = true;
     void verifyAttachment(a, m).then((c) => alive && setCheck(c));
-    if (a.type !== 'native') void tokenInfo(a.type, a.token).then((i) => alive && setInfo(i));
+    if (a.type !== 'native' && a.chainId === m.chainId) void tokenInfo(a.type, a.token, a.chainId).then((i) => alive && setInfo(i)).catch(() => {});
     return () => { alive = false; };
   }, [a, m]);
   const what = a.type === 'erc721'
     ? `${info?.symbol || 'NFT'} #${a.tokenId}`
     : `${info ? formatUnits(a.amount, info.decimals) : a.amount} ${info?.symbol ?? ''}`;
-  const lookalike = a.type !== 'native' && info ? lookalikeToken(info.symbol, a.token) : false;
+  const lookalike = a.type !== 'native' && info ? lookalikeToken(info.symbol, a.token, a.chainId) : false;
   const state = !check ? 'checking' : check.status;
   // 同一笔转账已经被更早一条核对通过的消息引用过：这条是重复引用（只在核对通过的消息之间比较，别人抢先引用抢不到）
-  const first = state === 'ok' ? firstClaim(a.tx, m.to) : null;
+  const first = state === 'ok' ? firstClaim(a.tx, m.to, m.chainId) : null;
   // 同一条消息里把同一笔转账写了两次：后面那个也算重复
   const duplicate = repeat || Boolean(first && first.id !== m.id);
   // 只有"发件人付的 + 常见代币 + 没有被重复引用 + 不像仿冒"才显示绿色；未知代币即使转账是真的也只显示中性

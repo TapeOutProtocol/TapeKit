@@ -12,5 +12,8 @@ contract DeWebPinnedTest is Test {
         assertEq(d.predictedBoot(), 0xC0D28CA8689248B0bed26cC0aa328CF16Aa4401e);
         assertEq(d.predictedHub(0x571d447f4f24688eC35Ccf07f1D6993655F6aF15), 0xe61A9C7213a6Aa616C246a2B569e555B417b25ee);
         assertEq(d.predictedBscHubImpl(), 0x80aFE7B77F2dFD08e9feab7675780baC34a7EE85);
+        // Base 与 X Layer（2026-09-19 起）：部署页 dist/deploy-deweb-hub.html 与客户端名单里的地址
+        assertEq(d.predictedBaseHubImpl(), 0x38A2d320b8984Bbac9b0a2691B6c0FD829A23867);
+        assertEq(d.predictedXLayerHubImpl(), 0xdCC57797089eBD9f26e686379A4323f353a3F9C6);
     }
 }

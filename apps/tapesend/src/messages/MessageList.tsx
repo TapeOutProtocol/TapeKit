@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { t, locale } from '../i18n';
-import { type Message, type OpenedMessage, senderLabel } from '../data/tapesend';
+import { type Message, type OpenedMessage, senderLabel , showsPending } from '../data/tapesend';
 
 const palette = ['#0f7b55', '#2b6de8', '#b3541e', '#7a4fd6', '#b3261e', '#00796b', '#8a6d00'];
 function colorFor(addr: string) {
@@ -60,7 +60,7 @@ function Row({ m, o, isNew, onOpen }: { m: Message; o: OpenedMessage; isNew: boo
         <span className="who mono">{label}</span>
         <span className="when">
           {isNew ? <span className="chip" style={{ height: 20, marginRight: 6 }}>{t('newContact')}</span> : null}
-          {m.pending ? <span className="chip warn" style={{ height: 20, marginRight: 6 }}>{t('pending')}</span> : null}
+          {showsPending(m) ? <span className="chip warn" style={{ height: 20, marginRight: 6 }}>{t('pending')}</span> : null}
           {o.kind === 'public' ? <span className="chip" style={{ height: 20, marginRight: 6 }}>{t('publicTag')}</span> : null}
           {formatTime(m.timestamp)}
         </span>

@@ -2,10 +2,10 @@
 // 所有读取都走核心的多节点一致读取（SPEC.md §4.1），任何单个节点、索引器都不被信任。
 import { createRpc } from '../../../kernel/src/rpc.js';
 import { createIdentity, decodeOutcome, callRequest } from '../../../kernel/src/identity.js';
-import { parseInput } from '../../../kernel/src/name.js';
+import { parseInput, formatLabel } from '../../../kernel/src/name.js';
 import { encodeCall, decodeResult } from '../../../kernel/src/abi.js';
 import { keccakHex } from '../../../kernel/src/keccak.js';
-import { BSC_MAINNET } from '../../../kernel/src/config.js';
+import { BSC_MAINNET, NETWORKS, networkByArea, networkByChainId, rpcOptionsFor, IMPL_SLOT } from '../../../kernel/src/config.js';
 import { TapeSendError, bytesToHex, hexToBytes } from './bytes.js';
 import { messageId } from './content.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -16,8 +16,9 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
  */
 export const CHAINS = Object.freeze([
   Object.freeze({ index: 0, chainId: 56, short: 'bnb', name: 'BNB Smart Chain', active: true }),
-  Object.freeze({ index: 1, chainId: 8453, short: 'base', name: 'Base', active: false }),
-  Object.freeze({ index: 2, chainId: 196, short: 'xlayer', name: 'X Layer', active: false }),
+  // 2026-09-19 启用：TapeOut 主协议与 DeWEB 中枢正式实现都已部署并核对
+  Object.freeze({ index: 1, chainId: 8453, short: 'base', name: 'Base', active: true }),
+  Object.freeze({ index: 2, chainId: 196, short: 'xlayer', name: 'X Layer', active: true }),
 ]);
 export const HOME_CHAIN_ID = 56;
 export const chainById = (id) => CHAINS.find((c) => c.chainId === Number(id)) || null;
@@ -70,6 +71,9 @@ export const HUB_IMPLEMENTATIONS_BY_CHAIN = Object.freeze({
   // 正式实现的构造参数里有各链自己的 TapeOut 合约地址和链号，所以每条链的实现地址都不一样，必须分链列出。
   // 以后开通新链：部署后把那条链的实现地址（经审计、字节码核对过）加在这里，并在 send/contracts 的钉住测试里同步
   56: Object.freeze([HUB_IMPLEMENTATION]),
+  // 2026-09-19：Base 与 X Layer（TapeOut 主协议已部署；中枢正式实现地址由源码确定性算出，send/contracts 钉住测试核对）
+  8453: Object.freeze(['0x38a2d320b8984bbac9b0a2691b6c0fd829a23867']),
+  196: Object.freeze(['0xdcc57797089ebd9f26e686379a4323f353a3f9c6']),
 });
 /** 某条链上客户端认可的中枢实现；没有列出的链一律不认可 */
 export const hubImplementationsFor = (chainId) => HUB_IMPLEMENTATIONS_BY_CHAIN[Number(chainId)] ?? Object.freeze([]);
@@ -130,29 +134,39 @@ export const normalizeReceipt = (r) => ({
 });
 export const normalizeHeader = (b) => ({ hash: hexField(b.hash, 32), number: q(b.number), parentHash: hexField(b.parentHash, 32), timestamp: q(b.timestamp) });
 
-/** TAP-10 §3.5：判断工厂封印所需的常量 */
-export const FACTORY_SEAL = Object.freeze({
-  implementation: '0xa68ccf4931d98ad0a4be15ee40542edc0dec6422',
-  circuitBeacon: '0xf8d6d8eb894d6971c8976ad8b4971cbefe028156',
-  circuitImplementation: '0x8e1d125def6d3826c278299273a0760d47626068',
-  implSlot: '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc',
-});
+/** TAP-10 §3.5：判断工厂封印所需的常量（BNB；各链的在 kernel/src/config.js 的 factorySeal 里） */
+export const FACTORY_SEAL = Object.freeze({ ...BSC_MAINNET.factorySeal, implSlot: IMPL_SLOT });
+/** 某条链的工厂封印常量 */
+export const factorySealFor = (chainId) => {
+  const n = networkByChainId(chainId);
+  return n ? Object.freeze({ ...n.factorySeal, implSlot: IMPL_SLOT }) : null;
+};
 
 
-/** 钉住的区块离现在太久就拒绝读公钥（防一个节点把钉住的区块压到过去，读到已经换掉的旧公钥） */
-export const MAX_BLOCK_AGE_SECONDS = 300;
+/** 钉住的区块离现在太久就拒绝读公钥（防一个节点把钉住的区块压到过去，读到已经换掉的旧公钥）。
+ *  BNB 的值；各链用自己配置里的 maxBlockAgeSeconds */
+export const MAX_BLOCK_AGE_SECONDS = BSC_MAINNET.maxBlockAgeSeconds;
 /** 区块时间比本机时钟快这么多，说明本机时钟不准，不能用来判断新鲜度 */
 export const MAX_CLOCK_AHEAD_SECONDS = 60;
 /** 一次最多核验的条数 */
 export const MAX_VERIFY_BATCH = 200;
 
-/** 显示用端点名：主链 #ID@编号，其他链 #ID@编号.短名 */
+/** 显示用端点名：BNB #ID@编号，其他链带区号 #ID@区号.编号（X Layer = 2，Base = 3）。本客户端不认识的链：#ID@编号.chain<链号> */
 export const endpointLabel = (tokenId, cpu, chainId = HOME_CHAIN_ID) => {
-  const base = `#${BigInt(tokenId)}@${BigInt(cpu)}`;
-  if (Number(chainId) === HOME_CHAIN_ID) return base;
-  const c = chainById(chainId);
-  return c ? `${base}.${c.short}` : `${base}.chain${Number(chainId)}`;
+  const n = networkByChainId(chainId);
+  if (n) return formatLabel(tokenId, cpu, n.area);
+  return `#${BigInt(tokenId)}@${BigInt(cpu)}.chain${Number(chainId)}`;
 };
+/** 输入（名字、#ID@区号.编号、32 字节端点号）属于哪条链；认不出链时返回 null。容器地址等不带链信息的写法返回 BNB */
+export function chainIdOfInput(input) {
+  const s = String(input ?? '').trim();
+  if (/^0x0{8}[0-9a-fA-F]{56}$/.test(s)) { const p = parseEndpointId(s); return p ? p.chainId : null; }
+  let parsed;
+  try { parsed = parseInput(s); } catch { return null; }
+  if (parsed.kind !== 'name') return HOME_CHAIN_ID;
+  const n = networkByArea(parsed.area);
+  return n ? n.chainId : null;
+}
 
 const word = (hex, i) => BigInt('0x' + hex.slice(2 + i * 64, 2 + (i + 1) * 64));
 const wordHex = (hex, i) => '0x' + hex.slice(2 + i * 64, 2 + (i + 1) * 64);
@@ -185,7 +199,9 @@ function decodeStructArray(hex, width) {
 export function createTapeSendChain(o = {}) {
   const net = { ...BSC_MAINNET, ...(o.network || {}) };
   const hub = lower(o.hub || HUB_MAINNET);
-  const rpc = o.rpc || createRpc({ urls: o.rpcUrls || net.rpcs, quorum: o.quorum, fetchImpl: o.fetchImpl });
+  const rpc = o.rpc || createRpc({ ...rpcOptionsFor(net, o.rpcUrls), quorum: o.quorum, fetchImpl: o.fetchImpl });
+  const seal = Object.freeze({ ...net.factorySeal, implSlot: IMPL_SLOT });
+  const maxBlockAge = net.maxBlockAgeSeconds ?? MAX_BLOCK_AGE_SECONDS;
   const fetchImpl = o.fetchImpl || globalThis.fetch.bind(globalThis);
   // 身份读取必须用严格模式，并且用自己的缓存：不和网页内核共用处理器编号表，
   // 否则一次默认模式下被串通节点带偏的结果会被写进共享缓存（TAP-10 §8.3）
@@ -234,12 +250,12 @@ export function createTapeSendChain(o = {}) {
   async function factoryStatus(block) {
     const items = [
       { to: net.factory, sel: keccakHex('isSealed()').slice(0, 10), out: ['bool'] },
-      { to: FACTORY_SEAL.circuitBeacon, sel: keccakHex('owner()').slice(0, 10), out: ['address'] },
-      { to: FACTORY_SEAL.circuitBeacon, sel: keccakHex('implementation()').slice(0, 10), out: ['address'] },
+      { to: seal.circuitBeacon, sel: keccakHex('owner()').slice(0, 10), out: ['address'] },
+      { to: seal.circuitBeacon, sel: keccakHex('implementation()').slice(0, 10), out: ['address'] },
     ];
     const answers = await rpc.many([
       ...items.map((it) => callRequest(it, block)),
-      { method: 'eth_getStorageAt', params: [net.factory, FACTORY_SEAL.implSlot, block] },
+      { method: 'eth_getStorageAt', params: [net.factory, seal.implSlot, block] },
     ], { all: true });
     const [sealedR, ownerR, implR] = items.map((it, i) => decodeOutcome(it.out, answers[i]));
     const slot = answers[3];
@@ -248,10 +264,10 @@ export function createTapeSendChain(o = {}) {
     const factoryImplementation = /^0x0{24}[0-9a-f]{40}$/.test(slotHex) ? '0x' + slotHex.slice(-40) : '';
     const sealed = !sealedR.revert && sealedR[0] === true;
     const beaconOwner = ownerR.revert ? '' : lower(ownerR[0]);
-    const circuitsIntact = !implR.revert && lower(implR[0]) === FACTORY_SEAL.circuitImplementation;
+    const circuitsIntact = !implR.revert && lower(implR[0]) === seal.circuitImplementation;
     return {
       sealed, factoryImplementation, beaconOwner, circuitsIntact,
-      inEffect: sealed && factoryImplementation === FACTORY_SEAL.implementation && beaconOwner === lower(net.factory) && circuitsIntact,
+      inEffect: sealed && factoryImplementation === seal.implementation && beaconOwner === lower(net.factory) && circuitsIntact,
     };
   }
 
@@ -267,7 +283,7 @@ export function createTapeSendChain(o = {}) {
     ];
     const answers = await rpc.many([
       ...items.map((it) => callRequest(it, block)),
-      { method: 'eth_getStorageAt', params: [hub, FACTORY_SEAL.implSlot, block] },
+      { method: 'eth_getStorageAt', params: [hub, seal.implSlot, block] },
     ], { all: true });
     const [sealedR, ownerR] = items.map((it, i) => decodeOutcome(it.out, answers[i]));
     const slot = answers[2];
@@ -285,7 +301,7 @@ export function createTapeSendChain(o = {}) {
     if (!h.ok || !h.raw) throw new TapeSendError('stale-block', 'cannot read the pinned block header');
     const age = Math.floor(Date.now() / 1000) - Number(h.raw.timestamp);
     if (age < -MAX_CLOCK_AHEAD_SECONDS) throw new TapeSendError('clock-skew', `pinned block is ${-age}s ahead of this device's clock`);
-    if (age > MAX_BLOCK_AGE_SECONDS) throw new TapeSendError('stale-block', `pinned block is ${age}s old`);
+    if (age > maxBlockAge) throw new TapeSendError('stale-block', `pinned block is ${age}s old`);
   }
 
   /**
@@ -296,9 +312,18 @@ export function createTapeSendChain(o = {}) {
    */
   async function resolveEndpoint(input, opts = {}) {
     const parsed = typeof input === 'string' ? parseInput(input) : input;
+    // 带区号的名字只属于那条链：先拒绝，不去读链（拿 #1@2.344 到 BNB 上查会查到另一枚电路）
+    if (parsed.kind === 'name' && (parsed.area ?? null) !== (net.area ?? null)) {
+      throw new TapeSendError('wrong-chain', `${formatLabel(parsed.tokenId, parsed.cpu, parsed.area)} is not on ${net.name || 'chain ' + net.chainId}`);
+    }
     await assertChain();
     const block = opts.block || (await rpc.pinBlock());
-    if (!opts.block && !opts.skipFreshness) await assertFreshBlock(block);
+    // 钉住的块不能比各运营方报的最高块落后太多（防一家把钉块压到过去、读到已经换掉的旧公钥）。
+    // 按块数比，不看本机时钟：电脑时间不准时不会一直报错
+    if (!opts.block && !opts.skipFreshness) {
+      const lag = typeof rpc.pinLag === 'function' ? rpc.pinLag() : 0n;
+      if (net.maxPinLagBlocks && lag > BigInt(net.maxPinLagBlocks)) throw new TapeSendError('stale-block', `pinned block is ${lag} blocks behind the highest head`);
+    }
     const { identity: id } = await identity.resolveIdentity(parsed, block);
     if (id.status !== 'ok') return { ...id, block };
     const [key, factory, hubSeal] = await Promise.all([keyFor(id.circuits, id.tokenId, block), factoryStatus(block), hubStatus(block)]);
@@ -470,21 +495,42 @@ export function createTapeSendChain(o = {}) {
   }
 
   /**
-   * 已最终确认的区块高度 F：逐个节点读 'finalized'，至少 3 个节点答上来才算数，取其中最小的。
+   * 已确认的区块高度 F：逐个节点读确认标签（BNB 'finalized'；L2 'safe'，见各链配置），至少 3 个不同运营方答上来才算数
+   * （配置不足 3 家时要全部答上来），取其中最小的。
    * 节点把 F 报低只会让更多消息显示"确认中"（安全方向）；报高会被最小值压住。读不到返回 null。
    */
+  const finalityTag = net.finality === 'safe' ? 'safe' : 'finalized';
   async function finalizedBlock() {
-    const got = await Promise.all(rpc.urls.map((url) => postOne(url, 'eth_getBlockByNumber', ['finalized', false])));
-    const nums = got.map((b) => (b && typeof b.number === 'string' && /^0x[0-9a-f]+$/i.test(b.number) ? BigInt(b.number) : null)).filter((n) => n !== null);
-    if (nums.length < 3) return null;
-    return nums.reduce((m, n) => (n < m ? n : m));
+    const got = await Promise.all(rpc.urls.map((url) => postOne(url, 'eth_getBlockByNumber', [finalityTag, false]).then((b) => ({ url, b }))));
+    const ok = got.filter(({ b }) => b && typeof b.number === 'string' && /^0x[0-9a-f]+$/i.test(b.number));
+    const ops = new Set(ok.map(({ url }) => rpc.operatorOf(url)));
+    if (ops.size < Math.min(3, rpc.operatorCount)) return null;
+    return ok.map(({ b }) => BigInt(b.number)).reduce((m, n) => (n < m ? n : m));
   }
 
   return {
-    finalizedBlock,
+    finalizedBlock, finalityTag, factorySeal: seal,
     hub, rpc, identity, network: net, chainId: net.chainId, assertChain, keyFor, factoryStatus, hubStatus, assertFreshBlock, resolveEndpoint,
     encodeSend, encodePublishKey, encodeRevokeKey, decodeSentLog, inbox, outbox, fetchMessage,
   };
 }
 
-export { hexToBytes };
+/**
+ * 每条已启用的链一个实例（各自的节点、工厂、封印常量、确认标签），中枢地址各链相同。
+ * @param {{ hub?: string, rpcUrls?: Record<string, string[]>, fetchImpl?: typeof fetch, quorum?: number }} [o]
+ *   rpcUrls：按链号或链名（bnb / xlayer / base）替换节点
+ * @returns {Map<number, ReturnType<typeof createTapeSendChain>>}
+ */
+export function createTapeSendChains(o = {}) {
+  const out = new Map();
+  for (const c of CHAINS) {
+    if (!c.active) continue;
+    const net = networkByChainId(c.chainId);
+    if (!net) continue;
+    const urls = o.rpcUrls && (o.rpcUrls[net.chainId] || o.rpcUrls[String(net.chainId)] || o.rpcUrls[net.key]);
+    out.set(net.chainId, createTapeSendChain({ network: net, hub: o.hub, rpcUrls: urls && urls.length ? urls : undefined, fetchImpl: o.fetchImpl, quorum: o.quorum }));
+  }
+  return out;
+}
+
+export { hexToBytes, NETWORKS };

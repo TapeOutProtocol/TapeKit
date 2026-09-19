@@ -1,9 +1,10 @@
 // tape:// 协议处理器：把内核接到 Electron 的网络层。
-// 页面请求 tape://4246.0.tape/index.html → 内核解析名字 → 从链上读文件、校验哈希 → 作为 HTTP 响应交给渲染进程。
+// 页面请求 tape://4246.0.tape/index.html（X Layer、Base 上的网站：tape://1.2.344.tape/…）→ 内核按区号选链、解析名字 → 从链上读文件、校验哈希 → 作为 HTTP 响应交给渲染进程。
 // 每个站点是一个真实来源（origin），所以 localStorage、cookie、钱包 provider 都按站点隔离。
 import { createKernel, createFsCache, statusText, InputError, RpcError, SiteError } from '../../../kernel/src/index.js';
 
 const RESOLVE_TTL_MS = 30_000;
+const NETWORK_NAMES = { 56: 'BNB Chain', 196: 'X Layer', 8453: 'Base' };
 const MAX_HANDLES = 64;
 
 /** 插进 HTML 的一切值都要转义 */
@@ -17,6 +18,8 @@ export async function createTapeProtocol({ cacheDir, locale = 'zh', rpcUrls, isB
   // 提示页的语言：跟随应用界面（界面里切换中英文时由主进程改）
   let lang = locale === 'en' ? 'en' : 'zh';
   const L = (zh, en) => (lang === 'en' ? en : zh);
+  // 网站所在链的节点；还没解析出来时用 BNB 的
+  const chainRpc = (res) => (res && res.chainId && kernel.kernelFor(res.chainId)?.rpc) || kernel.kernelFor(56)?.rpc || kernel.rpc;
   const stText = (s) => statusText(s, 'both')[lang] ?? s;
   /** name → { at, res, site, served: Map<path, SiteFile>, pages: Map<path, string>, offchain: Set<string>, error } */
   const handles = new Map();
@@ -33,7 +36,7 @@ export async function createTapeProtocol({ cacheDir, locale = 'zh', rpcUrls, isB
   };
 
   function nameOf(url) {
-    // 主机名就是链上名字：4246.0.tape；宽容接受 4246.0（用户手输）
+    // 主机名就是链上名字：4246.0.tape、1.2.344.tape；宽容接受 4246.0（用户手输）
     const host = url.hostname.toLowerCase();
     return host.endsWith('.tape') ? host : `${host}.tape`;
   }
@@ -106,11 +109,13 @@ main{max-width:560px;padding:32px}h1{font-size:20px;margin:0 0 12px}p{margin:6px
     const st = stText(res.status);
     const code = res.status === 'blocked' ? 451 : res.status === 'unpaid' ? 402 : res.status === 'store-changed' ? 503 : 404;
     const lines = [`${L('状态', 'Status')}: <b>${esc(st)}</b> (${esc(res.status)})`];
+    const chain = NETWORK_NAMES[res.chainId];
+    if (chain) lines.push(`${L('所在链', 'Chain')}: ${esc(chain)}`);
     if (res.container) lines.push(`${L('容器', 'Container')}: <code>${esc(res.container)}</code>`);
     if (res.holder) lines.push(`${L('持有人', 'Holder')}: <code>${esc(res.holder)}</code>`);
     if (res.status === 'unpaid') lines.push(L('这个容器还没有付费开通网站，持有人付费后即可访问。', 'This container has not paid for a website yet. It opens once the holder pays.'));
     if (res.status === 'store-changed') lines.push(L('链上合约实现地址与内核内置名单不一致，内核拒绝显示（fail-closed）。', 'The on-chain contract implementation does not match the built-in list, so the page is refused (fail-closed).'));
-    return textResponse(messagePage(`tape://${name}`, lines, `${L('区块', 'Block')} ${BigInt(res.block)}`), code, undefined, { 'x-tape-status': res.status });
+    return textResponse(messagePage(res.short || name, lines, `${L('区块', 'Block')} ${BigInt(res.block)}`), code, undefined, { 'x-tape-status': res.status });
   }
 
   function summary(h, name, pagePath, { forSite = false } = {}) {
@@ -120,7 +125,7 @@ main{max-width:560px;padding:32px}h1{font-size:20px;margin:0 0 12px}p{margin:6px
       name,
       // 当前页面本身的结果：verified / unverified / not-found / error / status。只有 verified 才能显示"已验证"
       page: h && pagePath !== undefined ? h.pages.get(pagePath) ?? null : null,
-      offchainBlocked: h ? [...h.offchain].slice(0, 50) : [],
+      offchain: h ? [...h.offchain].slice(0, 50) : [],
       status: res ? res.status : (h && h.error ? 'error' : 'loading'),
       statusText: res ? stText(res.status) : (h && h.error ? String(h.error.message || h.error) : ''),
       block: res ? BigInt(res.block).toString() : null,
@@ -131,9 +136,12 @@ main{max-width:560px;padding:32px}h1{font-size:20px;margin:0 0 12px}p{margin:6px
       files: files.length,
       verified: files.filter((f) => f.verified).length,
       unverified: files.filter((f) => !f.verified).map((f) => f.path),
-      quorum: kernel.rpc.quorum,
-      // 节点地址只给应用界面看，不给网站（以后换成带密钥的节点时会泄露）
-      ...(forSite ? {} : { nodes: Object.entries(kernel.rpc.stats()).map(([url, s]) => ({ url, ok: s.ok, fail: s.fail })) }),
+      chainId: res ? res.chainId : null,
+      network: res ? res.network || null : null,
+      short: res ? res.short || null : null,
+      quorum: chainRpc(res).quorum,
+      // 节点地址只给应用界面看，不给网站（以后换成带密钥的节点时会泄露）。只列这个网站所在链的节点
+      ...(forSite ? {} : { nodes: Object.entries(chainRpc(res).stats()).map(([url, s]) => ({ url, ok: s.ok, fail: s.fail })) }),
       cache: cache.kind,
     };
   }
@@ -214,9 +222,9 @@ main{max-width:560px;padding:32px}h1{font-size:20px;margin:0 0 12px}p{margin:6px
         'content-length': String(file.bytes.length),
         'cache-control': 'no-cache',
         'x-content-type-options': 'nosniff',
-        // 链上网站只能连自己和其它 tape:// 网站：WebTransport、WebSocket、fetch（包括 Worker 里的）都不能出链
-        // sandbox 不带 allow-modals / allow-downloads：页面和它新建的空白子框架都不能弹打印面板等模态窗口
-        'content-security-policy': "connect-src 'self' tape: data: blob:; sandbox allow-scripts allow-same-origin allow-forms allow-popups",
+        // 链上网站可以访问链外数据（钱包连接、视频流、接口），但代码只能来自链上：script-src、worker-src 不放链外地址
+        // （空白子框架、Worker 继承这条策略）。sandbox 不带 allow-modals / allow-downloads：页面和它新建的空白子框架都不能弹打印面板等模态窗口
+        'content-security-policy': "script-src 'self' tape: 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' tape: blob:; object-src 'none'; sandbox allow-scripts allow-same-origin allow-forms allow-popups",
         'x-tape-name': name,
         'x-tape-sha256': file.sha256,
         'x-tape-verified': '1',

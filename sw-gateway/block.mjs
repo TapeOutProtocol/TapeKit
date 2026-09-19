@@ -4,7 +4,7 @@
 import fs from 'node:fs'; import path from 'node:path'; import { execSync } from 'node:child_process'; import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url)); const file = path.join(here, 'blocklist.txt');
 const args = process.argv.slice(2); const remove = args[0] === '--remove'; const target = (remove ? args[1] : args[0] || '').trim().toLowerCase(); const reason = remove ? '' : (args[1] || '');
-if (!/^(0x[0-9a-f]{40}|[1-9][0-9]*\.(0|[1-9][0-9]*)\.tape)$/.test(target)) { console.error('用法：node sw-gateway/block.mjs <4246.0.tape | 0x容器地址> ["原因"]  或  --remove <同上>'); process.exit(1); }
+if (!/^(0x[0-9a-f]{40}|[1-9][0-9]*\.([1-9][0-9]*\.)?(0|[1-9][0-9]*)\.tape)$/.test(target)) { console.error('用法：node sw-gateway/block.mjs <4246.0.tape | 1.2.344.tape | 0x容器地址> ["原因"]  或  --remove <同上>'); process.exit(1); }
 let lines = fs.readFileSync(file, 'utf8').split('\n');
 if (remove) lines = lines.filter((l) => l.trim().toLowerCase() !== target && !l.startsWith('# ' + target + ' '));
 else if (!lines.some((l) => l.trim().toLowerCase() === target)) lines.push(`# ${target} · ${new Date().toISOString().slice(0, 10)}${reason ? ' · ' + reason : ''}`, target);

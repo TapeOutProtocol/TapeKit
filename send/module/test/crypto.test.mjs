@@ -346,6 +346,46 @@ test('endpoint bytes: zero chain id or zero container is refused on both input p
   assert.throws(() => endpointBytes('0x' + '0'.repeat(8) + '0'.repeat(14) + '38' + '0'.repeat(40)), code('bad-input')); // 容器为 0
   assert.equal(endpointBytes('0x' + '0'.repeat(8) + '0'.repeat(14) + '38' + '12'.repeat(20)).length, 32);
   assert.ok(hubImplementationsFor(56).length >= 1);
-  assert.deepEqual([...hubImplementationsFor(8453)], []);
+  assert.deepEqual([...hubImplementationsFor(8453)], ['0x38a2d320b8984bbac9b0a2691b6c0fd829a23867']);
+  assert.deepEqual([...hubImplementationsFor(196)], ['0xdcc57797089ebd9f26e686379a4323f353a3f9c6']);
+  assert.deepEqual([...hubImplementationsFor(42161)], []);
   assert.deepEqual(HUB_IMPLEMENTATIONS, hubImplementationsFor(56));
+});
+
+test('multi-chain: labels with area codes, input → chain, chain instances use their own network', async () => {
+  const { endpointLabel, chainIdOfInput, createTapeSendChains, factorySealFor, FACTORY_SEAL, DEFAULT_CHAINS, CHAINS, endpointId } = await import('../src/chain.js');
+  assert.equal(endpointLabel(4246n, 0n), '#4246@0');
+  assert.equal(endpointLabel(4246n, 0n, 56), '#4246@0');
+  assert.equal(endpointLabel(1n, 344n, 196), '#1@2.344');
+  assert.equal(endpointLabel(1n, 5n, 8453), '#1@3.5');
+  assert.equal(endpointLabel(1n, 5n, 42161), '#1@5.chain42161');
+  assert.equal(chainIdOfInput('#4246@0'), 56);
+  assert.equal(chainIdOfInput('4246.0'), 56);
+  assert.equal(chainIdOfInput('#1@2.344'), 196);
+  assert.equal(chainIdOfInput('1.3.5'), 8453);
+  assert.equal(chainIdOfInput(A), 56, 'container address without chain info → BNB');
+  assert.equal(chainIdOfInput(endpointId(196, A)), 196);
+  assert.equal(chainIdOfInput('1.9.5'), null);
+  assert.equal(chainIdOfInput('nonsense'), null);
+  // 三条链都启用，默认收信位图 = 7
+  assert.deepEqual(CHAINS.filter((c) => c.active).map((c) => c.chainId), [56, 8453, 196]);
+  assert.equal(DEFAULT_CHAINS, 7n);
+  const chains = createTapeSendChains({ fetchImpl: async () => { throw new Error('offline'); } });
+  assert.deepEqual([...chains.keys()], [56, 8453, 196]);
+  const bnb = chains.get(56), base = chains.get(8453), x = chains.get(196);
+  assert.equal(bnb.finalityTag, 'finalized');
+  assert.equal(base.finalityTag, 'safe');
+  assert.equal(x.finalityTag, 'safe');
+  assert.equal(base.rpc.pin, 'latest');
+  assert.equal(bnb.rpc.pin, 'latest');
+  assert.equal(bnb.factorySeal.implementation, FACTORY_SEAL.implementation);
+  assert.equal(base.factorySeal.implementation, '0x74956236ab64ed143933040b4137e8a352e4d17b');
+  assert.equal(x.factorySeal.circuitBeacon, '0xf70d1ed4f62cf3780157b0b421b7e2f45bd0991c');
+  assert.equal(factorySealFor(196).circuitImplementation, '0x977f217887e085d298cb3819cdad5a0ee35f29b2');
+  assert.equal(factorySealFor(42161), null);
+  for (const c of chains.values()) assert.equal(c.hub, '0xe61a9c7213a6aa616c246a2b569e555b417b25ee');
+  assert.equal(x.network.factory, '0x1f09daefa827f02cbb40967cc91b259763760761');
+  assert.ok(x.rpc.urls.every((u) => !/bsc|bnbchain/.test(u)));
+  // 带区号的名字不能拿到别的链上解析
+  await assert.rejects(bnb.resolveEndpoint('#1@2.344'), (e) => /X Layer|BNB/.test(String(e.message)));
 });

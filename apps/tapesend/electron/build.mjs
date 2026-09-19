@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 const env = { ...loadEnv('production', process.cwd(), 'VITE_'), ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('VITE_'))) };
 const hostOf = (u) => { try { return new URL(u).hostname; } catch { return ''; } };
 const extra = [env.VITE_TAPESEND_INDEXER, env.VITE_BSC_RPC].map(hostOf).filter(Boolean);
-console.log(`桌面版 DNS 白名单额外主机：${extra.length ? extra.join(', ') : '（无）'}`);
+console.log(`桌面版界面可连的额外主机：${extra.length ? extra.join(', ') : '（无）'}`);
 
 await build({
   entryPoints: ['electron/main.mjs'],

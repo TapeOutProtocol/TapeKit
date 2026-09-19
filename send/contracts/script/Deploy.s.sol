@@ -7,6 +7,7 @@ import {DeWebAdmin} from "../src/DeWebAdmin.sol";
 import {DeWebBoot} from "../src/DeWebBoot.sol";
 import {DeWebProxy} from "../src/DeWebProxy.sol";
 import {MainnetAddresses as M} from "./MainnetAddresses.sol";
+import {L2Addresses as L} from "./L2Addresses.sol";
 
 /// @notice 只计算，不广播。打印 CREATE2 预测地址。真正的部署由持有人在浏览器钱包里签名（deploy-page.mjs）。
 ///
@@ -40,6 +41,24 @@ contract Deploy is Script {
                 uint256(56), M.REGISTRY, M.IMPLEMENTATION, M.FACTORY, M.PAYMENTS, M.CIRCUIT_BEACON, M.CIRCUIT_IMPLEMENTATION, M.CIRCUIT_CODEHASH
             )
         );
+    }
+
+    /// @notice Base（8453）与 X Layer（196）的正式实现：TapeOut 地址两链相同，只有链号不同。
+    function l2HubInitCode(uint256 chainId) public pure returns (bytes memory) {
+        return abi.encodePacked(
+            type(DeWebHub).creationCode,
+            abi.encode(
+                chainId, L.REGISTRY, L.IMPLEMENTATION, L.FACTORY, L.PAYMENTS, L.CIRCUIT_BEACON, L.CIRCUIT_IMPLEMENTATION, L.CIRCUIT_CODEHASH
+            )
+        );
+    }
+
+    function predictedBaseHubImpl() public pure returns (address) {
+        return _create2(SALT_HUB_IMPL, l2HubInitCode(8453));
+    }
+
+    function predictedXLayerHubImpl() public pure returns (address) {
+        return _create2(SALT_HUB_IMPL, l2HubInitCode(196));
     }
 
     function _create2(bytes32 salt, bytes memory code) internal pure returns (address) {

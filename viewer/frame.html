@@ -5,7 +5,7 @@
 <!-- 沙盒渲染页：由查看器以 sandbox="allow-scripts"（不带 allow-same-origin）加载，来源是不透明的。
      站点代码只在这里运行：拿不到查看器页面、拿不到任何持久存储、链外请求被 CSP 拦截（SPEC.md §7）。
      文件按需从外壳要：一开始只给入口页和它引用到的资源；页面运行中还要别的文件，就发 hp-need 让外壳去链上读。 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' blob:; img-src blob: data:; font-src blob: data:; media-src blob: data:; connect-src blob: data: https://bsc-dataseed.bnbchain.org https://bsc-rpc.publicnode.com https://bsc-dataseed1.defibit.io https://bsc-dataseed1.ninicoin.io; worker-src blob:; frame-src blob:; form-action 'none'; base-uri https://site.tape.invalid">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' blob: https:; img-src blob: data: https:; font-src blob: data: https:; media-src blob: data: https:; connect-src blob: data: https: wss:; worker-src blob:; frame-src blob: https:; form-action 'none'; base-uri https://site.tape.invalid">
 <title>tape</title>
 </head>
 <body>

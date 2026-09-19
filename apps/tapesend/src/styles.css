@@ -298,6 +298,20 @@ button { cursor: pointer; }
 .chat-send:disabled { opacity: 0.4; cursor: default; }
 .chat-send svg { width: 20px; height: 20px; }
 
+/* 回复框：邮件式（发送消息人 / 收取消息人、正文、附件、发送），不是聊天气泡式的一行输入 */
+.mail-reply { max-width: 760px; margin: 0 auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.mail-reply-head { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--text-2); }
+.mail-reply-k { color: var(--text-3); margin-right: 4px; }
+.mail-reply-body {
+  display: block; width: 100%; min-height: 110px; max-height: 40vh; resize: vertical; border: 0; outline: none; background: transparent;
+  color: var(--text); padding: 12px 14px; font: inherit; font-size: 15px; line-height: 1.6;
+}
+.mail-reply-attach:empty { display: none; }
+.mail-reply-attach { padding: 0 14px; }
+.mail-reply-foot { display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 6px; border-top: 1px solid var(--line); }
+.mail-reply-foot .btn svg { width: 16px; height: 16px; vertical-align: -3px; }
+.mail-reply-foot .grow { flex: 1; min-width: 0; }
+
 /* ---------------------------------------------------------------- 会话：邮件卡片 + 时间线 */
 .timeline { position: relative; padding-left: 44px; }
 .timeline::before { content: ""; position: absolute; left: 15px; top: 8px; bottom: 8px; width: 2px; background: var(--line); border-radius: 1px; }
@@ -392,3 +406,10 @@ button { cursor: pointer; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .lang-btn { height: 32px; min-width: 44px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--text-2); font-size: 13px; font-weight: 600; cursor: pointer; }
 .lang-btn:hover { color: var(--text); background: var(--surface-2); }
+
+/* 宽屏（桌面版、电脑上的浏览器）：整个界面等比放大 1.2 倍——文字、间距、按钮一起变大，比例和手机上一样，
+   手机和窄窗口不受影响。用 zoom 而不是逐个改字号：写死的像素字号很多，逐个改容易漏，也会把手机上的一起放大。
+   Chromium 的 zoom 下 getBoundingClientRect 仍是窗口坐标，桌面版按它摆放网站视图，位置不受影响（2026-09-19 实测）。 */
+@media (min-width: 900px) {
+  html { zoom: 1.2; }
+}

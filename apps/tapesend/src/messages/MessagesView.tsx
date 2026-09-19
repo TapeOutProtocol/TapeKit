@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAccount, useChainId, useConfig, usePublicClient, useSendTransaction } from 'wagmi';
+import { useAccount, useConfig } from 'wagmi';
 import { signMessage } from '@wagmi/core';
-import { bsc } from 'wagmi/chains';
+import { ChainSwitchError, useChainClient, useChainSend } from '../wallet/tx';
 import { t } from '../i18n';
 import { IconLock, IconPen, IconReload } from '../icons';
 import { hasAppKit, keySigningBlocked, openWalletModal } from '../wallet/config';
 import {
   type Endpoint, type ExpectedLog, type Hex, type Message, type MoreToken, HUB_TOPICS, boxCounts, endpointContainer, groupConversations, mergeMessages, addContacts, contacts, clearKeys, confirmTx, currentKeyUnlocked, knownPeer, listMessages, mutedSenders,
-  openMessage, publishKeyTx, resolveEndpoint, revokeKeyTx, setMuted, unlock,
+  openMessage, publishKeyTx, resolveEndpoint, revokeKeyTx, setMuted, unlock, needsChainsUpdate, updateChainsTx, chainName, isSafeChain,
 } from '../data/tapesend';
 import { IdentityPicker } from './IdentityPicker';
 import { ChatThread, ConversationList } from './Chat';
@@ -19,7 +19,7 @@ type KeyState = 'idle' | 'working' | 'publishing' | 'confirming' | 'nondetermini
 /** 用户在钱包里点了拒绝（不是超时或网络错误） */
 const isUserRejection = (e: unknown) => {
   const x = e as { name?: string; code?: number; cause?: { code?: number }; message?: string } | null;
-  return Boolean(x && (x.name === 'UserRejectedRequestError' || x.code === 4001 || x.cause?.code === 4001 || /user (rejected|denied)|rejected the request|cancel/i.test(String(x.message ?? ''))));
+  return Boolean(x && (x.name === 'UserRejectedRequestError' || x.code === 4001 || x.cause?.code === 4001 || /user (rejected|denied)|rejected the request|user cancel/i.test(String(x.message ?? ''))));
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -31,11 +31,14 @@ const identitySig = (e: Endpoint) => JSON.stringify([e.holder, e.opened, e.key.v
 
 export function MessagesView() {
   const { address, isConnected, connector } = useAccount();
-  const chainId = useChainId();
   const [identity, setIdentity] = useState<Endpoint | null>(null);
   const [picking, setPicking] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [issues, setIssues] = useState({ dropped: 0, unavailable: 0 });
+  // 读到的各条链里，中枢或处理器工厂还没封印的：来自这些链的消息要带安全提示（设计文档 §7）
+  // 这次没读到中枢状态的链（消息照常显示、附件不核对）；中枢实现不在认可名单里的链（消息已丢弃，要更新客户端）
+  const [unchecked, setUnchecked] = useState<number[]>([]);
+  const [hubBad, setHubBad] = useState<number[]>([]);
   // 陌生发件人的消息折叠了多少条；点"全部显示"后不再限量
   const [folded, setFolded] = useState(0);
   const [showAll, setShowAll] = useState(false);
@@ -55,11 +58,14 @@ export function MessagesView() {
   const [keyMenu, setKeyMenu] = useState<null | 'menu' | 'rotate' | 'revoke'>(null);
   const [notice, setNotice] = useState('');
   const [keyTick, setKeyTick] = useState(0);
+  // 等钱包签名超过 15 秒：提示去手机钱包里确认，并给取消按钮
+  const [signSlow, setSignSlow] = useState(false);
   const [muteTick, setMuteTick] = useState(0);
 
   const wagmiConfig = useConfig();
-  const { sendTransactionAsync } = useSendTransaction();
-  const publicClient = usePublicClient({ chainId: bsc.id });
+  // 交易发到身份所在的链（钱包不在那条链上时先请它切换）
+  const sendTx = useChainSend();
+  const clientFor = useChainClient();
 
   // 最新的钱包地址：签名、发交易之前都要核对它没有在中途换掉
   const addressRef = useRef(address);
@@ -120,6 +126,9 @@ export function MessagesView() {
       setMessages(mergeMessages([...inPage.items, ...outPage.items]));
       setMore(inPage.more || outPage.more ? { in: inPage.more, out: outPage.more } : null);
       setIssues({ dropped: inPage.dropped + outPage.dropped, unavailable: inPage.unavailable + outPage.unavailable });
+      const st = [...(inPage.chainStatus ?? []), ...(outPage.chainStatus ?? [])];
+      setUnchecked([...new Set(st.filter((x) => !x.checked).map((x) => x.chainId))]);
+      setHubBad([...new Set(st.filter((x) => x.checked && (!x.hubExpected || !x.circuitsIntact)).map((x) => x.chainId))]);
     } catch (e) {
       if (n === loadSeq.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -180,7 +189,10 @@ export function MessagesView() {
         if (Date.now() - lastReload < gap) return; // 先不记新总数：间隔到了再加载
         lastReload = Date.now();
         gap = Math.min(Math.max(gap * 2, 8_000), 60_000);
+        setRetries(0);
         void load(true);
+        // 计数读的是最新块，完整加载钉在往回 2 块的位置：刚上链的那条可能这一轮还读不到，几秒后再加载一次
+        setTimeout(() => { if (alive) void load(true); }, 8_000);
       } else if (Date.now() - lastReload > 60_000) {
         gap = 0;
       }
@@ -236,22 +248,29 @@ export function MessagesView() {
 
   /** 等交易结果（替换、取消、回滚都不算成功，多节点核对回执）；再等链上读到新状态（节点的固定区块会落后几块） */
   const waitFor = useCallback(async (hash: Hex, expected: ExpectedLog, done: (e: Endpoint) => boolean): Promise<KeyState> => {
+    const publicClient = clientFor(expected.chainId);
     if (!publicClient) return 'unknown';
     const outcome = await confirmTx((args) => publicClient.waitForTransactionReceipt(args), hash, { ...expected, wallet: addressRef.current });
     if (outcome.status === 'reverted') return 'reverted';
     if (outcome.status === 'replaced') return 'replaced';
     if (outcome.status === 'unknown') return 'unknown';
     setKeyState('confirming');
-    for (let i = 0; i < 20; i++) {
+    // L2（Base、X Layer）按安全区块读链，比最新块晚几分钟：最多等 6 分钟；BNB 等 1 分钟
+    const tries = isSafeChain(expected.chainId) ? 120 : 20;
+    for (let i = 0; i < tries; i++) {
       const e = await refreshIdentity().catch(() => null);
       if (e && done(e)) return 'idle';
       await sleep(3000);
     }
     return 'not-visible';
-  }, [publicClient, refreshIdentity]);
+  }, [clientFor, refreshIdentity]);
 
+  // 每次开启/解锁一个编号：取消或重来之后，旧流程里迟到的签名结果一律作废，不再往下发交易
+  const unlockRun = useRef(0);
+  const cancelKeyWork = () => { unlockRun.current++; setKeyState('idle'); setSignSlow(false); };
   const doUnlock = useCallback(async (rotate = false) => {
     if (!identity || !address) return;
+    const run = ++unlockRun.current;
     const wallet = address as Hex;
     const blocked = keySigningBlocked(connector?.id);
     if (blocked) {
@@ -273,7 +292,13 @@ export function MessagesView() {
       // 用链上最新状态决定：只解锁，还是派生并发布新钥匙（TAP-10 §4.2、§4.5）
       const fresh = await refreshIdentity();
       if (!fresh) { setKeyState('idle'); return; }
-      const r = await unlock(fresh, wallet, sign, { rotate });
+      // 中枢实现不是核对过的版本：不签、不发（它可能改了公钥记录的逻辑）
+      if (!fresh.hub.expectedImplementation) { setKeyState('idle'); setError(t('hubChanged')); return; }
+      setSignSlow(false);
+      const slow = setTimeout(() => { if (run === unlockRun.current) setSignSlow(true); }, 15_000);
+      let r: Awaited<ReturnType<typeof unlock>>;
+      try { r = await unlock(fresh, wallet, sign, { rotate }); } finally { clearTimeout(slow); if (run === unlockRun.current) setSignSlow(false); }
+      if (run !== unlockRun.current) return;   // 用户点了取消：签名迟到了，不再发布
       if (r.status !== 'unlocked') {
         setKeyState(r.status);
         return;
@@ -286,9 +311,9 @@ export function MessagesView() {
         pendingPublish.current = { container: fresh.container, wallet: wallet.toLowerCase(), publicKey: r.publicKey, at: Date.now() };
         let hash: Hex;
         try {
-          hash = (await sendTransactionAsync({ to: tx.to, data: tx.data, chainId: bsc.id, account: wallet })) as Hex;
+          hash = await sendTx({ to: tx.to, data: tx.data, chainId: fresh.chainId, account: wallet });
         } catch (e) {
-          if (isUserRejection(e)) { pendingPublish.current = null; throw e; }
+          if (isUserRejection(e) || e instanceof ChainSwitchError) { pendingPublish.current = null; throw e instanceof ChainSwitchError ? new Error(t('switchChainFailed').replace(/\{chain\}/g, () => chainName(fresh.chainId))) : e; }
           // 钱包接口报错不等于交易没发：WalletConnect 超时后，钱包里可能还挂着这笔请求、用户稍后仍会确认。
           // 先等链上出现这把钥匙，不让用户重复开启（重复开启会再签两次、再发一笔交易）
           setKeyState('confirming');
@@ -296,17 +321,18 @@ export function MessagesView() {
           setKeyState('publish-unknown');
           return;
         }
-        const result = await waitFor(hash, { topic0: HUB_TOPICS.KeyPublished, container: fresh.container, data: tx.data }, landed);
+        const result = await waitFor(hash, { chainId: fresh.chainId, topic0: HUB_TOPICS.KeyPublished, container: fresh.container, data: tx.data }, landed);
         if (result !== 'idle') { setKeyState(result); return; }
         pendingPublish.current = null;
       }
       setKeyState('idle');
       setKeyTick((n) => n + 1);
     } catch (e) {
+      if (run !== unlockRun.current) return;   // 已被取消或被新的流程取代：不覆盖新流程的状态
       setKeyState('idle');
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [identity, address, connector, sign, sendTransactionAsync, refreshIdentity, waitFor, pollKey]);
+  }, [identity, address, connector, sign, sendTx, refreshIdentity, waitFor, pollKey]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
 
   const doRevoke = useCallback(async () => {
@@ -319,9 +345,12 @@ export function MessagesView() {
       const fresh = await refreshIdentity();
       if (!fresh) { setKeyState('idle'); return; }
       if (!sameWallet(wallet)) { setKeyState('account-changed'); return; }
+      if (!fresh.hub.expectedImplementation) { setKeyState('idle'); setError(t('hubChanged')); return; }
       const tx = revokeKeyTx(fresh);
-      const hash = await sendTransactionAsync({ to: tx.to, data: tx.data, chainId: bsc.id, account: wallet });
-      const result = await waitFor(hash as Hex, { topic0: HUB_TOPICS.KeyRevoked, container: fresh.container, data: tx.data }, (e) => !e.key.usable);
+      const hash = await sendTx({ to: tx.to, data: tx.data, chainId: fresh.chainId, account: wallet }).catch((e) => {
+        throw e instanceof ChainSwitchError ? new Error(t('switchChainFailed').replace(/\{chain\}/g, () => chainName(fresh.chainId))) : e;
+      });
+      const result = await waitFor(hash, { chainId: fresh.chainId, topic0: HUB_TOPICS.KeyRevoked, container: fresh.container, data: tx.data }, (e) => !e.key.usable);
       setKeyState(result);
       if (result === 'idle') {
         clearKeys();
@@ -332,7 +361,67 @@ export function MessagesView() {
       setKeyState('idle');
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [identity, address, sendTransactionAsync, refreshIdentity, waitFor]);
+  }, [identity, address, sendTx, refreshIdentity, waitFor]);
+
+  /**
+   * 补全收信链：老用户的公钥只声明了读 BNB，别的链上的人给他发加密消息会被客户端拒绝。
+   * 同一把公钥、同一序号重新发布一次，位图补全（不用签钥匙文字）。
+   */
+  // 上一笔补全还没有结果（结果不明、链上暂时读不到）：10 分钟内不许再发一笔。记在本机，刷新页面也还在
+  const pendKey = (container: string) => `tapesend:chains-update:${container.toLowerCase()}`;
+  const getPendChains = (container: string): number | null => { try { const v = Number(localStorage.getItem(pendKey(container))); return Number.isFinite(v) && v > 0 ? v : null; } catch { return null; } };
+  const setPendChains = (container: string, at: number | null) => { try { if (at) localStorage.setItem(pendKey(container), String(at)); else localStorage.removeItem(pendKey(container)); } catch { /* 忽略 */ } };
+  const doUpdateChains = useCallback(async () => {
+    if (!identity || !address) return;
+    const pc = getPendChains(identity.container);
+    if (pc && Date.now() - pc < 10 * 60_000) { setError(t('chainsUpdatePending')); return; }
+    const wallet = address as Hex;
+    setKeyState('publishing');
+    setError('');
+    try {
+      const shown = identity.key;
+      const fresh = await refreshIdentity();
+      if (!fresh || !needsChainsUpdate(fresh, wallet)) { setKeyState('idle'); return; }
+      if (!sameWallet(wallet)) { setKeyState('account-changed'); return; }
+      if (!fresh.hub.expectedImplementation) { setKeyState('idle'); setError(t('hubChanged')); return; }
+      // 这笔交易会把"链上当前这把公钥"原样重发一次。要求：本机能解开它（派生结果与链上一致），
+      // 并且从你看到提示到现在，公钥没被换过或撤销过——否则可能把别的设备刚撤销的旧钥匙又发布回来
+      if (!currentKeyUnlocked(wallet, fresh) || fresh.key.version !== shown.version || fresh.key.key.toLowerCase() !== shown.key.toLowerCase()) {
+        setKeyState('idle'); setError(t('chainsUpdateStale')); return;
+      }
+      const tx = updateChainsTx(fresh);
+      setPendChains(fresh.container, Date.now());
+      let hash: Hex;
+      try {
+        hash = await sendTx({ to: tx.to, data: tx.data, chainId: fresh.chainId, account: wallet });
+      } catch (e) {
+        // 拒绝、切链失败：交易没发出，解除防重复
+        if (isUserRejection(e) || e instanceof ChainSwitchError) setPendChains(fresh.container, null);
+        throw e;
+      }
+      // 记下读到的那份身份（React 的状态此时可能还没刷新，不能用 identityRef）
+      let seen: Endpoint | null = null;
+      const result = await waitFor(hash, { chainId: fresh.chainId, topic0: HUB_TOPICS.KeyPublished, container: fresh.container, data: tx.data }, (e) => {
+        if (needsChainsUpdate(e, wallet)) return false;
+        seen = e;
+        return true;
+      });
+      setKeyState(result);
+      if (result === 'reverted' || result === 'replaced') setPendChains(fresh.container, null);
+      if (result === 'idle') {
+        setPendChains(fresh.container, null);
+        const after = seen as Endpoint | null;
+        // 上链后版本必须正好加 1：中间插进了别的发布或撤销，提醒用户检查
+        if (after && after.key.version !== fresh.key.version + 1) setError(t('chainsUpdateRaced'));
+        else setNotice(t('chainsUpdated'));
+      }
+      setKeyTick((n) => n + 1);
+    } catch (e) {
+      setKeyState('idle');
+      if (e instanceof ChainSwitchError) setError(t('switchChainFailed').replace(/\{chain\}/g, () => chainName(identity.chainId)));
+      else if (!isUserRejection(e)) setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [identity, address, sendTx, refreshIdentity, waitFor]);
 
   const keyReady = Boolean(identity && address && identity.key.usable && identity.key.current.toLowerCase() === address.toLowerCase());
   const unlocked = Boolean(identity && address && currentKeyUnlocked(address, identity));
@@ -365,11 +454,6 @@ export function MessagesView() {
           </button>
         </div>
       </div>
-    );
-  }
-  if (chainId !== bsc.id) {
-    return (
-      <div className="scroll"><div className="empty"><p>{t('wrongChain')}</p></div></div>
     );
   }
   if (!identity || picking) {
@@ -413,8 +497,8 @@ export function MessagesView() {
       <div className="scroll">
         <div className="list-head">
           <h1 className="list-title">{t('chats')}</h1>
-          <button className="identity" onClick={() => setPicking(true)} title={identity.container}>
-            <b className="mono">{identity.label}</b>
+          <button className="identity" onClick={() => setPicking(true)} title={`${chainName(identity.chainId)} · ${identity.container}`}>
+            <b className="mono">{identity.label}</b>{identity.chainId !== 56 ? <span className="hint"> · {chainName(identity.chainId)}</span> : null}
           </button>
           <button className="icon-btn" onClick={() => void load()} disabled={loading} aria-label={t('reload')} title={t('reload')}>{loading ? <span className="spinner" /> : <IconReload />}</button>
           <button className="btn small" onClick={() => setAssetsOpen(true)}>{t('assets')}</button>
@@ -432,10 +516,11 @@ export function MessagesView() {
               <p>{t('unlockText')}</p>
               <p className="hint">{t('publishKeyNeeded')}</p>
               {keyProblem ? <p className="hint bad">{keyProblem}</p> : null}
-              {keyState === 'confirming' ? <p className="hint">{t('confirmingOnChain')}</p> : null}
+              {keyState === 'confirming' ? <p className="hint">{isSafeChain(identity.chainId) ? t('confirmingOnChainL2').replace(/\{chain\}/g, () => chainName(identity.chainId)) : t('confirmingOnChain')}</p> : null}
               <button className="btn primary setup-btn" disabled={keyBusy} onClick={() => void doUnlock(false)}>
                 {keyBusy ? <span className="spinner" /> : t('unlock')}
               </button>
+              {signSlow ? <p className="hint">{t('signWaiting')} <button className="btn small" onClick={cancelKeyWork}>{t('cancel')}</button></p> : null}
             </section>
           ) : null}
           {!halted && keyReady && !unlocked ? (
@@ -448,9 +533,22 @@ export function MessagesView() {
               <button className="btn small primary" disabled={keyBusy} onClick={() => void doUnlock(false)}>
                 {keyBusy ? <span className="spinner" /> : t('unlockOnly')}
               </button>
+              {signSlow ? <button className="btn small" onClick={cancelKeyWork}>{t('cancel')}</button> : null}
             </div>
           ) : null}
           {keyReady && unlocked && keyProblem ? <div className="notice bad" style={{ marginBottom: 8 }}>{keyProblem}</div> : null}
+          {signSlow ? <div className="notice warn" style={{ marginBottom: 8 }}>{t('signWaiting')}</div> : null}
+          {!halted && keyReady && unlocked && needsChainsUpdate(identity, address) ? (
+            <div className="notice warn unlock-row" style={{ marginBottom: 8 }}>
+              <div className="grow">
+                <div>{t('chainsUpdateTitle')}</div>
+                <div className="hint">{t('chainsUpdateText')}</div>
+              </div>
+              <button className="btn small primary" disabled={keyBusy} onClick={() => void doUpdateChains()}>
+                {keyBusy ? <span className="spinner" /> : t('chainsUpdate')}
+              </button>
+            </div>
+          ) : null}
           {notice ? <div className="notice ok" style={{ marginBottom: 8 }}>{notice}</div> : null}
           {folded > 0 && !showAll ? (
             <div className="notice warn" style={{ marginBottom: 8 }}>
@@ -458,6 +556,8 @@ export function MessagesView() {
               <button className="btn small" onClick={() => { setShowAll(true); showAllRef.current = true; void load(); }}>{t('foldedShowAll')}</button>
             </div>
           ) : null}
+          {hubBad.length ? <div className="notice bad" role="alert" style={{ marginBottom: 8 }}>{t('chainHubChanged').replace(/\{chains\}/g, () => hubBad.map((id) => chainName(id)).join('、'))}</div> : null}
+          {unchecked.length ? <div className="notice warn" style={{ marginBottom: 8 }}>{t('chainsUnchecked').replace(/\{chains\}/g, () => unchecked.map((id) => chainName(id)).join('、'))}</div> : null}
           {issues.dropped > 0 ? <div className="notice bad" style={{ marginBottom: 8 }}>{t('droppedItems').replace('{n}', String(issues.dropped))}</div> : null}
           {issues.unavailable > 0 ? <div className="notice warn" style={{ marginBottom: 8 }}>{t('unavailableItems').replace('{n}', String(issues.unavailable))}</div> : null}
           {error ? <div className="notice bad" role="alert">{error}</div> : null}
@@ -538,7 +638,7 @@ export function MessagesView() {
           onSent={(warning) => {
             setComposing(null);
             if (warning) setNotice(warning);
-            setNotice((n) => n || t('sentSyncing'));
+            setNotice((n) => n || (isSafeChain(identity.chainId) ? t('sentSyncingL2').replace(/\{chain\}/g, () => chainName(identity.chainId)) : t('sentSyncing')));
             refreshAfterSend();
           }}
         />

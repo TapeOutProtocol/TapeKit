@@ -12,15 +12,15 @@ const DEV = LOCAL && new URLSearchParams(location.search).has('dev');
 // ---- 界面文案（内核的状态/错误文案在内核里，这里只放查看器自己的）
 const UI = {
   brandTitle: { zh: 'HashPort 纯链上网站查看器（预览模式）', en: 'HashPort on-chain site viewer (preview mode)' },
-  placeholder: { zh: '输入链上名字，例如 4246.0.tape、#4246@0 或容器地址 0x…', en: 'Enter an on-chain name, e.g. 4246.0.tape, #4246@0, or a container address 0x…' },
+  placeholder: { zh: '输入链上名字，例如 4246.0、#4246@0、1.2.344（X Layer）或容器地址 0x…', en: 'Enter an on-chain name, e.g. 4246.0, #4246@0, 1.2.344 (X Layer), or a container address 0x…' },
   open: { zh: '打开', en: 'Open' }, details: { zh: '详情', en: 'Details' }, spec: { zh: '规范', en: 'Spec' },
-  welcomeTitle: { zh: '直接从 BNB 链读网站', en: 'Read websites straight from BNB Chain' },
+  welcomeTitle: { zh: '直接从链上读网站（BNB Chain、X Layer、Base）', en: 'Read websites straight from the chain (BNB Chain, X Layer, Base)' },
   welcome1: { zh: '不经过域名、不经过 DNS、不经过网关。每个文件都与链上的 SHA-256 核对，至少两个节点结果一致才采用。', en: 'No domain, no DNS, no gateway. Every file is checked against its on-chain SHA-256, and at least two independent nodes must agree.' },
   welcome2: { zh: '这是预览模式：网站运行在隔离的沙盒里，不能保存数据，也不能连接钱包。', en: 'This is preview mode: sites run in an isolated sandbox, cannot store data, and cannot connect a wallet.' },
   resolving: { zh: '正在解析…', en: 'Resolving…' }, badInput: { zh: '地址写法不对', en: 'Invalid address' }, readFail: { zh: '读取失败', en: 'Read failed' },
   unpaidTitle: { zh: '这个链上名字还没开通', en: 'This on-chain name is not activated' },
   unpaid1: { zh: '没有查到 {name} 的有效付费（这个名字或这个容器都没有），所以不显示。', en: 'No valid payment found for {name} (neither the name nor its container), so it is not displayed.' },
-  unpaid2: { zh: '开通方法：电路持有人调用付费合约 DomainBinding.bind("{name}", 容器, 月数)，每 30 天 0.08 BNB，最多预付 10 年。容器已经为域名付过费的，自动算作开通。', en: 'To activate: the circuit holder calls DomainBinding.bind("{name}", container, months) — 0.08 BNB per 30 days, up to 10 years prepaid. A container that already paid for a domain counts as activated.' },
+  unpaid2: { zh: '开通方法：电路持有人在 {network} 上调用付费合约 DomainBinding.bind("{name}", 容器, 月数)，按 30 天付费（费用以合约为准），最多预付 10 年。容器已经为域名付过费的自动算作开通。', en: 'To activate: the circuit holder calls DomainBinding.bind("{name}", container, months) on {network}, paying per 30 days (the contract sets the fee), up to 10 years prepaid. A container that already paid for a domain counts as activated.' },
   container: { zh: '容器', en: 'Container' }, holder: { zh: '持有人', en: 'Holder' }, cannotShow: { zh: '无法显示', en: 'Cannot display' },
   loading: { zh: '正在从链上读取文件…', en: 'Reading files from chain…' }, preparing: { zh: '准备中', en: 'Preparing' },
   loadFail: { zh: '读取站点失败', en: 'Failed to load site' }, notFound: { zh: '404 · 链上没有这个文件', en: '404 · No such file on chain' }, home: { zh: '回首页', en: 'Home' },
@@ -30,14 +30,14 @@ const UI = {
   live: { zh: '已开通', en: 'Live' }, until: { zh: '至', en: 'until' }, viaContainer: { zh: '（容器已付费）', en: ' (container paid)' },
   filesBad: { zh: '{n} 个文件与链上不一致', en: '{n} file(s) do not match chain' }, filesNoHash: { zh: '{n} 个文件未声明哈希', en: '{n} file(s) without declared hash' },
   filesOk: { zh: '{n} 个文件全部与链上一致', en: 'all {n} file(s) match chain' }, filesLazy: { zh: '已读 {n} / {m} 个文件，全部与链上一致', en: '{n} / {m} files read, all match chain' },
-  external: { zh: '引用了 {n} 处链外资源（已拦截）', en: '{n} off-chain reference(s) (blocked)' }, pure: { zh: '100% 链上', en: '100% on-chain' },
+  external: { zh: '引用了 {n} 处链外资源', en: '{n} off-chain reference(s)' }, pure: { zh: '100% 链上', en: '100% on-chain' },
   dev: { zh: '开发模式', en: 'dev mode' }, cached: { zh: '{n} 个来自本地缓存', en: '{n} from local cache' },
   processor: { zh: '{i} 号处理器{name} 的 #{id}', en: 'processor #{i}{name}, circuit #{id}' },
   url: { zh: '网址', en: 'URL' }, cpuContract: { zh: '处理器合约', en: 'Processor contract' }, block: { zh: '读取区块', en: 'Block read' },
   stores: { zh: '仓库实现', en: 'Store implementations' }, pinned: { zh: '已钉住', en: 'pinned' }, notPinned: { zh: '不在名单', en: 'not pinned' },
-  files: { zh: '文件', en: 'Files' }, externalList: { zh: '链外资源', en: 'Off-chain references' }, runtimeBlocked: { zh: '运行时拦截', en: 'blocked at runtime' },
+  files: { zh: '文件', en: 'Files' }, externalList: { zh: '链外资源', en: 'Off-chain references' }, runtimeBlocked: { zh: '被拦下的链外代码', en: 'off-chain code blocked' },
   updated: { zh: '站长更新了这个网站', en: 'The site has been updated on chain' }, reload: { zh: '重新读取', en: 'Reload' },
-  nodes: { zh: 'BNB Smart Chain · {n} 个节点 · 至少 {q} 个一致', en: 'BNB Smart Chain · {n} nodes · at least {q} must agree' },
+  nodes: { zh: '{chain} · {n} 个节点 · 至少 {q} 家一致', en: '{chain} · {n} nodes · at least {q} operators must agree' },
   cacheKind: { zh: '缓存：{k}', en: 'cache: {k}' },
 };
 let locale = 'zh';
@@ -49,7 +49,7 @@ let blocklist = new Set();
 const cache = await (async () => { try { return await createIdbCache('hashport-viewer'); } catch { return createMemoryCache(); } })();
 const kernel = createKernel({ cache, locale, isBlocked: ({ container, name }) => blocklist.has(container.toLowerCase()) || blocklist.has(name) });
 let current = null;       // { res, site, external: Map(path → [url]) }
-let runtimeBlocked = [];  // 运行时被 CSP 拦截的链外请求
+let runtimeBlocked = [];  // 运行时被 CSP 拦截的链外代码（链外数据可以访问，脚本只能来自链上）
 let openSeq = 0;
 let frame = null;
 let stopWatch = null;
@@ -63,7 +63,10 @@ function applyStaticText() {
   $('detailsSummary').textContent = ui('details');
   $('specLink').textContent = ui('spec');
   $('langBtn').textContent = locale === 'zh' ? 'English' : '中文';
-  $('net').textContent = ui('nodes', { n: kernel.rpc.urls.length, q: kernel.rpc.quorum }) + ' · ' + ui('cacheKind', { k: cache.kind });
+  // 页脚：当前打开的网站在哪条链，就显示那条链的节点（还没打开网站时显示 BNB）
+  const chainRpc = (current && current.chainId && kernel.kernelFor(current.chainId)?.rpc) || kernel.kernelFor(56)?.rpc || kernel.rpc;
+  const chainNameOf = { 56: 'BNB Chain', 196: 'X Layer', 8453: 'Base' }[(current && current.chainId) || 56];
+  $('net').textContent = ui('nodes', { chain: chainNameOf, n: chainRpc.urls.length, q: chainRpc.quorum }) + ' · ' + ui('cacheKind', { k: cache.kind });
   if (!current && $('message')) { $('message').innerHTML = `<h1>${esc(ui('welcomeTitle'))}</h1><p>${esc(ui('welcome1'))}</p><p class="hint">${esc(ui('welcome2'))}</p>`; }
 }
 
@@ -205,7 +208,7 @@ async function open(input, opts = {}) {
   if (res.status !== 'ok' && !(DEV && res.status === 'unpaid')) {
     if (res.status === 'unpaid') {
       return message('warn', ui('unpaidTitle'),
-        `<p>${esc(ui('unpaid1', { name: res.name }))}</p><p>${esc(ui('unpaid2', { name: res.name }))}</p><p class="hint">${ui('container')} ${esc(cs(res.container))}</p>`);
+        `<p>${esc(ui('unpaid1', { name: res.name }))}</p><p>${esc(ui('unpaid2', { name: res.name, network: ({ 56: 'BNB Chain', 196: 'X Layer', 8453: 'Base' })[res.chainId] || 'BNB Chain' }))}</p><p class="hint">${ui('container')} ${esc(cs(res.container))}</p>`);
     }
     return message('bad', statusText(res.status) || ui('cannotShow'), res.name ? `<p>${esc(res.name)}</p>` : '');
   }

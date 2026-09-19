@@ -7,10 +7,9 @@ import { app, BaseWindow, WebContentsView, Menu, protocol, ipcMain, shell, sessi
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import net from 'node:net';
 import { createTapeProtocol } from './tape-protocol.mjs';
-import { parseInput } from '../../../kernel/src/name.js';
-import { BSC_MAINNET } from '../../../kernel/src/config.js';
+import { parseInput, formatUrl, formatName, formatShort } from '../../../kernel/src/name.js';
+import { NETWORKS } from '../../../kernel/src/config.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(here, '..', 'dist');  // 打包后 main.mjs 在 dist-electron/，界面在同级的 dist/
@@ -19,8 +18,6 @@ const DEV_URL = !app.isPackaged ? process.env.TAPESEND_DEV_URL || '' : '';
 const DEV_ORIGIN = DEV_URL ? new URL(DEV_URL).origin : '';
 const SMOKE_DIR = !app.isPackaged ? process.env.TAPESEND_SMOKE || '' : '';
 const BLOCKLIST_URL = 'https://tapekit.org/.tape/blocklist.txt';
-// 桌面界面不嵌任何框架（钱包来源核验在非网页版里跳过）：内嵌钱包等第三方框架一律不许加载
-const UI_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 // tape 协议不开放 Service Worker：网站注册的后台脚本能拦截请求，绕过逐文件校验、屏蔽和付费状态
 protocol.registerSchemesAsPrivileged([
@@ -35,7 +32,7 @@ function toTapeUrl(raw) {
   const s = String(raw || '').trim();
   try {
     const p = parseInput(s);
-    if (p.kind === 'name') return { tape: `tape://${p.tokenId}.${p.cpu}.tape/${p.path || ''}` };
+    if (p.kind === 'name') return { tape: formatUrl(p.tokenId, p.cpu, p.path || '', 'tape', p.area) };
   } catch {
     // 不是链上名字
   }
@@ -48,11 +45,23 @@ const NOTICE_PREFIX = 'data:text/html;charset=utf-8,';
 // 界面语言：默认跟随系统；界面里切换中英文时由界面告诉主进程（弹窗、提示页跟着变）
 let uiLocale = null;
 const isZh = () => (uiLocale ?? (app.getLocale().startsWith('zh') ? 'zh' : 'en')) === 'zh';
+/** tape:// 网址是规范的链上网址（主机名正好是 4246.0.tape 或 1.2.344.tape）就返回 {short, path}，否则 null */
+function canonicalTape(url) {
+  const m = /^tape:\/\/([0-9.]+\.tape)(\/.*)?$/i.exec(url || '');
+  if (!m) return null;
+  try {
+    const p = parseInput(m[1]);
+    if (p.kind !== 'name' || formatName(p.tokenId, p.cpu, 'tape', p.area) !== m[1].toLowerCase()) return null;
+    return { short: formatShort(p.tokenId, p.cpu, p.area), path: m[2] && m[2] !== '/' ? m[2] : '' };
+  } catch {
+    return null;
+  }
+}
 function displayOf(url) {
   if ((url || '').startsWith(NOTICE_PREFIX)) return isZh() ? '已停止加载' : 'Stopped loading';
-  const m = /^tape:\/\/(\d+)\.(\d+)\.tape(\/.*)?$/i.exec(url || '');
-  // 地址栏只显示 4246.0：.tape 只是内部网址用的（纯数字主机名会被当成 IP 地址），不给用户看
-  if (m) return `${m[1]}.${m[2]}${m[3] && m[3] !== '/' ? m[3] : ''}`;
+  // 地址栏只显示 4246.0、1.2.344：.tape 只是内部网址用的（纯数字主机名会被当成 IP 地址），不给用户看
+  const c = canonicalTape(url);
+  if (c) return c.short + c.path;
   if (/^tape:\/\//i.test(url || '')) {
     // 非规范地址原样显示（包括结尾多出的点），不能修饰成和正规地址一样
     try { const u = new URL(url); return u.hostname + (u.pathname && u.pathname !== '/' ? u.pathname : ''); } catch { /* 无效地址 */ }
@@ -61,20 +70,26 @@ function displayOf(url) {
 }
 
 /* global __UI_EXTRA_HOSTS__ */
-// DNS 白名单：Chromium 网络栈只解析界面自己要连的主机（节点、索引器、钱包连接服务）。
-// 链上网站写 <link rel=dns-prefetch>、或让 WebRTC 解析 TURN 主机名，都会发出 DNS 查询，
-// 攻击者的域名服务器能借此收发数据、追踪访客；代理管不到 DNS。这里让其它名字一律解析失败（含 .local 的 mDNS）。
-// 主进程里内核读链用的是 Node 自己的网络栈，不受这条规则影响。
+// 应用界面（持有消息钥匙、连着钱包）只许连这些主机：节点、索引器、钱包连接服务。
+// 以前用全局 DNS 白名单实现，但那条规则对整个应用生效，会把链上网站的链外访问（钱包连接、视频流、接口）一起挡死；
+// 现在改成界面自己的 CSP，只管界面，不管网站视图。
 const UI_HOSTS = [
-  ...BSC_MAINNET.rpcs.map((u) => new URL(u).hostname),
+  ...NETWORKS.flatMap((n) => n.rpcs.map((u) => new URL(u).hostname)),
   ...(typeof __UI_EXTRA_HOSTS__ !== 'undefined' ? __UI_EXTRA_HOSTS__ : []),
   '*.walletconnect.org', '*.walletconnect.com', 'walletconnect.org', 'walletconnect.com',
   '*.reown.com', 'reown.com', '*.web3modal.org', '*.web3modal.com',
   '*.coinbase.com', '*.cb-w.com', '*.bscscan.com',
-  // 开发模式（未打包、设置了开发地址）才放行开发服务器
-  ...(DEV_ORIGIN ? [new URL(DEV_ORIGIN).hostname] : []),
 ];
-app.commandLine.appendSwitch('host-resolver-rules', ['MAP * ~NOTFOUND', ...[...new Set(UI_HOSTS)].map((h) => `EXCLUDE ${h}`)].join(', '));
+const uiSources = (schemes) => [...new Set(UI_HOSTS)].flatMap((h) => schemes.map((sc) => `${sc}://${h}`)).join(' ');
+// 开发模式（未打包、设置了开发地址）才放行开发服务器
+const DEV_SRC = DEV_ORIGIN ? `${DEV_ORIGIN} ${DEV_ORIGIN.replace(/^http/, 'ws')}` : '';
+// 桌面界面不嵌任何框架（钱包来源核验在非网页版里跳过）：内嵌钱包等第三方框架一律不许加载
+const UI_CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
+  `img-src 'self' data: blob: ${uiSources(['https'])}`, `font-src 'self' data: ${uiSources(['https'])}`,
+  `connect-src 'self' ${uiSources(['https', 'wss'])} ${DEV_SRC}`.trim(),
+  "frame-src 'none'", "object-src 'none'", "base-uri 'none'", "form-action 'none'",
+].join('; ');
 
 // 正式包拒绝带调试参数启动：fuses 挡不住 Chromium 的 --remote-debugging-*，
 // 带上它启动，同一用户下的任何本机程序都能在界面里执行代码（界面持有钥匙、连着钱包）
@@ -163,12 +178,9 @@ async function main() {
   const siteSession = session.fromPartition('persist:tapekit-sites');
   // 以前版本可能让网站注册过 Service Worker：启动时清掉
   await siteSession.clearStorageData({ storages: ['serviceworkers', 'cachestorage'] }).catch(() => {});
-  // 网站会话走一个连不上的代理：WebRTC 的 TCP 中继（TURN over TCP）等不经过请求过滤器的连接也出不去。
-  // 配合 disable_non_proxied_udp，UDP 也不许直连。tape:// 是本地协议处理器，不走代理，不受影响
-  // 代理端口由主进程自己占住：收到连接立刻断开。不用固定端口，免得本机别的进程抢先监听、真的转发出去
-  const sink = net.createServer((socket) => socket.destroy());
-  await new Promise((resolve) => sink.listen(0, '127.0.0.1', resolve));
-  await siteSession.setProxy({ proxyRules: `socks5://127.0.0.1:${sink.address().port}`, proxyBypassRules: '<-loopback>' });
+  // 链上网站可以访问链外数据（钱包连接、视频流、接口），网站会话不再走"连不上的代理"。
+  // 以前版本设过代理：显式改回直连
+  await siteSession.setProxy({ mode: 'direct' });
   const blocklist = createBlocklist(path.join(app.getPath('userData'), 'blocklist.txt'));
   const tape = await createTapeProtocol({
     cacheDir: path.join(app.getPath('userData'), 'tape-cache'),
@@ -446,11 +458,14 @@ async function main() {
   for (const ev of ['did-navigate', 'did-navigate-in-page', 'did-stop-loading', 'did-fail-load']) site.webContents.on(ev, () => void pushState());
   site.webContents.on('did-start-loading', pushSoon);
 
-  // 链下请求默认全部拦下，并记进网站状态（SPEC §7.5）：否则一行链下脚本就能换掉整个网站，徽章却还显示已验证
+  // 链外访问：数据放行，记进网站状态（状态里列出、不再显示「100% 链上」）。
+  // 网站的代码只能来自链上：由 tape:// 响应头里的 script-src 挡（子框架、Worker 继承）；
+  // 这里不按资源类型拦脚本，否则网站嵌入的播放器、钱包连接页（它们是独立的链外来源）自己的脚本也会被误拦。
+  // 顶层页面不许跳到链外（导航另由 will-navigate 确认后交给系统浏览器）
   siteSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
     const name = siteName();
-    if (name) tape.noteOffchain(name, details.url.slice(0, 300));
-    callback({ cancel: true });
+    if (name) { try { const u = new URL(details.url); tape.noteOffchain(name, (u.origin + u.pathname).slice(0, 300)); } catch { /* 无效地址 */ } }
+    callback({ cancel: details.resourceType === 'mainFrame' });
     // 网站在后台时不推（记录已记下，回到前台的下一次推送会带上）
     if (siteWanted && !overlay) pushSoon();
   });
@@ -509,9 +524,9 @@ async function main() {
   // 系统里点 tape:// 链接：在浏览器标签打开（macOS 走 open-url，Windows 走第二个实例的命令行）
   const openFromSystem = (url) => {
     if (typeof url !== 'string') return;
-    const m = /^tape:\/\/(\d+)\.(\d+)\.tape(\/\S*)?$/i.exec(url.trim());
-    if (!m) return;
-    if (openTape(`${m[1]}.${m[2]}${m[3] && m[3] !== '/' ? m[3] : ''}`) && !ui.webContents.isDestroyed()) ui.webContents.send('browser:opened');
+    const c = /\s/.test(url.trim()) ? null : canonicalTape(url.trim());
+    if (!c) return;
+    if (openTape(c.short + c.path) && !ui.webContents.isDestroyed()) ui.webContents.send('browser:opened');
     win.focus();
   };
   openUrlHandler = openFromSystem;
@@ -541,12 +556,16 @@ async function main() {
     await new Promise((r) => setTimeout(r, Number(process.env.TAPESEND_SMOKE_WAIT_MS || 8000)));
     const u = new URL(site.webContents.getURL());
     const text = await site.webContents.executeJavaScript('document.body ? document.body.innerText.slice(0, 200) : ""').catch((e) => `error: ${e.message}`);
-    // 探测：网站能否注册 Service Worker、能否发出链下请求（都应当失败）
+    // 探测：网站不能注册 Service Worker、不能加载链外脚本；链外数据可以访问
     const sw = await site.webContents.executeJavaScript("navigator.serviceWorker ? navigator.serviceWorker.register('/sw.js').then(() => 'registered', (e) => 'refused: ' + e.message) : 'no api'").catch((e) => `error: ${e.message}`);
-    const offchain = await site.webContents.executeJavaScript("fetch('https://example.com/probe').then(() => 'fetched', (e) => 'blocked: ' + e.message)").catch((e) => `error: ${e.message}`);
+    const offchain = await site.webContents.executeJavaScript("fetch('https://example.com/probe', { mode: 'no-cors' }).then(() => 'fetched', (e) => 'blocked: ' + e.message)").catch((e) => `error: ${e.message}`);
+    const offchainScript = await site.webContents.executeJavaScript("new Promise((res) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js'; s.onload = () => res('loaded'); s.onerror = () => res('blocked'); document.head.appendChild(s); setTimeout(() => res('timeout'), 8000); })").catch((e) => `error: ${e.message}`);
     const rtc = await site.webContents.executeJavaScript("typeof RTCPeerConnection + '/' + typeof WebTransport").catch((e) => `error: ${e.message}`);
-    // 界面仍能连节点（DNS 白名单生效后）；网站的 DNS 预取发不出去由审计脚本另测
+    // 界面仍能连节点（界面 CSP 的主机名单里有）；界面连不了名单外的地址
     const uiRpc = await ui.webContents.executeJavaScript("fetch('https://bsc-dataseed.bnbchain.org', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }) }).then((r) => r.json()).then((j) => j.result, (e) => 'failed: ' + e.message)").catch((e) => `error: ${e.message}`);
+    // 多链：界面也要连得上 X Layer、Base 的节点（界面 CSP 的主机名单里要有）；地址栏显示带区号的短名字
+    const uiRpcL2 = await ui.webContents.executeJavaScript("Promise.all(['https://rpc.xlayer.tech', 'https://mainnet.base.org'].map((u) => fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }) }).then((r) => r.json()).then((j) => j.result, (e) => 'failed: ' + e.message)))").catch((e) => `error: ${e.message}`);
+    const display = [displayOf('tape://1.2.344.tape/a/b'), displayOf('tape://4246.0.tape/'), displayOf('tape://1.02.344.tape/'), displayOf('tape://1.4.3.tape/')];
     // 顶层跳 about:blank：应当退回链上页面，历史里不留空白记录
     await site.webContents.executeJavaScript("setTimeout(() => { location.href = 'about:blank'; }, 10); 1").catch(() => {});
     await new Promise((r) => setTimeout(r, 3000));
@@ -566,7 +585,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1500));
     const trailingDot = await site.webContents.executeJavaScript('document.body ? document.body.innerText.slice(0, 80) : ""').catch((e) => `error: ${e.message}`);
     const state = await tape.summary(tape.nameOf(u), u.pathname || '/');
-    console.log(JSON.stringify({ ipcFromUi, trailingDot, ui: ui.webContents.getURL(), site: site.webContents.getURL(), title: site.webContents.getTitle(), text, serviceWorker: sw, offchainFetch: offchain, realtime: rtc, uiRpc, uiOther, afterBlank, historyUrls, status: state.status, page: state.page, verified: state.verified, files: state.files, unverified: state.unverified, offchainBlocked: state.offchainBlocked }));
+    console.log(JSON.stringify({ uiRpcL2, display, ipcFromUi, trailingDot, ui: ui.webContents.getURL(), site: site.webContents.getURL(), title: site.webContents.getTitle(), text, serviceWorker: sw, offchainFetch: offchain, offchainScript, realtime: rtc, uiRpc, uiOther, afterBlank, historyUrls, status: state.status, page: state.page, verified: state.verified, files: state.files, unverified: state.unverified, offchain: state.offchain }));
     for (let i = 0; i < 5; i++) {
       try {
         await fs.writeFile(path.join(out, 'site.png'), (await site.webContents.capturePage()).toPNG());

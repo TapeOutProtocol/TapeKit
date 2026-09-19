@@ -1,6 +1,6 @@
 import { t } from '../i18n';
 import { IconBack } from '../icons';
-import { type Endpoint, type Message, type OpenedMessage, chainName, replySubject } from '../data/tapesend';
+import { type Endpoint, type Message, type OpenedMessage, chainName, explorerUrl, replySubject , showsPending } from '../data/tapesend';
 import { useLabel } from './MessageList';
 
 export function MessageReader({ message, me, opened, muted, onClose, onReply, onMute }: {
@@ -45,11 +45,11 @@ export function MessageReader({ message, me, opened, muted, onClose, onReply, on
             <dt>{t('time')}</dt>
             <dd>
               {when}
-              {message.pending ? ` ${t('pending')}` : ''}
+              {showsPending(message) ? ` ${t('pending')}` : ''}
             </dd>
             <dt>{t('tx')}</dt>
             <dd className="mono">
-              <a href={`https://bscscan.com/block/${message.blockNumber}`} target="_blank" rel="noopener noreferrer">
+              <a href={`${explorerUrl(message.chainId)}/block/${message.blockNumber}`} target="_blank" rel="noopener noreferrer">
                 {chainName(message.chainId)} #{message.blockNumber}
               </a>
             </dd>

@@ -7,7 +7,7 @@
 import { BSC_MAINNET } from './config.js';
 import { encodeCall, decodeResult } from './abi.js';
 import { SEL } from './selectors.js';
-import { formatName } from './name.js';
+import { formatName, formatLabel, InputError } from './name.js';
 import { createMemoryCache } from './cache.js';
 import { KernelError } from './i18n.js';
 
@@ -95,6 +95,10 @@ export function createIdentity(o) {
    *   status 为 ok 表示身份成立（电路存在）；是否开通看 opened，由调用方决定怎么处理。
    */
   async function resolveIdentity(parsed, block, opts = {}) {
+    // 带区号的名字只能在那条链上解析：拿 1.2.344 去 BNB 上查，会查到另一枚毫不相干的电路
+    if (parsed.kind === 'name' && (parsed.area ?? null) !== (net.area ?? null)) {
+      throw new InputError('input.wrong-network', { name: formatLabel(parsed.tokenId, parsed.cpu, parsed.area), network: net.name || `chain ${net.chainId}` });
+    }
     const prepend = opts.prepend || [];
     const first = parsed.kind === 'name'
       ? [{ to: net.factory, sel: SEL.cpuCount, out: ['uint'] }, { to: net.factory, sel: SEL.cpuAt, types: ['uint256'], values: [parsed.cpu], out: ['address'] }]
@@ -140,7 +144,7 @@ export function createIdentity(o) {
     // 容器地址输入：必须能从 (处理器, #ID) 精确算回同一个地址，否则是冒充的合约
     if (container && derived !== container) return { prepended, identity: { container, circuits, status: 'not-tapeout' } };
     const identity = {
-      name: formatName(tokenId, cpu, net.nameSuffix), cpu, cpuName: cpuName.revert ? '' : cpuName[0],
+      name: formatName(tokenId, cpu, net.nameSuffix, net.area), area: net.area ?? null, chainId: net.chainId, cpu, cpuName: cpuName.revert ? '' : cpuName[0],
       circuits, tokenId, container: derived, holder: owner.revert ? null : owner[0], opened: !opened.revert && opened[0] === true,
       status: owner.revert ? 'no-such-token' : 'ok',
     };
