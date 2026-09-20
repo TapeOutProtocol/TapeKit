@@ -1,6 +1,9 @@
 // 持久缓存（可插拔）。内核只依赖这四个方法：get(key) → {meta, bytes}|undefined、set(key, meta, bytes)、delete(key)、clear()。
 // 三种实现：内存（默认）、Node 文件目录、浏览器 IndexedDB。都按字节数做 LRU，超限淘汰最久没用的。
-// 文件按链上 sha256 存（内容寻址），所以哈希一变自然失效；缓存里的字节在读出时不再重新校验，本地存储视为可信。
+// 文件按链上 sha256 存（内容寻址），所以哈希一变自然失效。
+// ⚠️ **本地存储一律当成不可信**：Service Worker 网关里，缓存所在的来源正是网站代码运行的来源，
+//    网站脚本、浏览器扩展、共用电脑的人都能改写它。所以字节读出时必须重新算哈希再比对（kernel.js 的 fileFromCache），
+//    身份解析这类结果根本不写进来（审计 2026-09-20 实测：不重算就能让网关给链上没有的内容盖"已核对"的章）。
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

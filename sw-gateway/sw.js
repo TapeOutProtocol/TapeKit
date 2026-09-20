@@ -65,7 +65,8 @@ async function siteFor(name, { fresh = false } = {}) {
   })();
   return h.loading;
 }
-const push = (arr, item, key = 'url') => { if (!arr.some((x) => x[key] === item[key])) { arr.push(item); if (arr.length > MAX_LOG) arr.shift(); } };
+// 满了丢**最新**的，不丢最早的：早期记录才是证据。原来丢最早的，网站发 200 条噪音就能把真证据挤掉（审计 2026-09-20）
+const push = (arr, item, key = 'url') => { if (arr.length < MAX_LOG && !arr.some((x) => x[key] === item[key])) arr.push(item); };
 // 子域名第一段：#ID-处理器编号（BNB），或 #ID-区号-处理器编号（X Layer = 2、Base = 3）
 const labelOf = (hostname) => {
   if (hostname.endsWith('.')) return null;   // 4246-0.tapekit.org. 和不带点的是两个来源：拒绝
@@ -88,6 +89,8 @@ const siteCsp = () => [
   "img-src 'self' blob: data: https:", "font-src 'self' blob: data: https:", "media-src 'self' blob: data: https:",
   "connect-src 'self' blob: data: https: wss:",
   "frame-src 'self' https:", "worker-src 'self' blob:", "object-src 'none'", "base-uri 'self'", "form-action 'self' https:",
+  // 只允许同源把自己嵌进框架：否则任何网页都能把链上网站整页框住做点击劫持（连钱包的站尤其要紧）
+  "frame-ancestors 'self'",
   'report-uri /.tape/csp-report',
 ].join('; ');
 // 网站所在链的节点（状态页只列这条链的）；还没解析出来时用汇总
@@ -204,8 +207,12 @@ async function noteExternal(e, url) {
   try { const c = await self.clients.get(e.clientId || e.resultingClientId); if (c) name = labelOf(new URL(c.url).hostname)?.name || null; } catch {}
   // 这个 Service Worker 只管自己这一个来源（一个网站一个子域名）：客户端网址取不到时（blob Worker、srcdoc 框架）按自己的主机名算
   name ||= labelOf(self.location.hostname)?.name || null;
-  const h = name && sites.get(name);
-  if (!h || siteNodeSet(labelOf(self.location.hostname)).has(url.href)) return;
+  if (siteNodeSet(labelOf(self.location.hostname)).has(url.href)) return;   // 本链节点不算链外
+  // 句柄不在就先建一个：Service Worker 空闲几十秒就会被浏览器回收，重启后 sites 是空的，
+  // 原来这里直接 return，于是"页面放着不动、之后才发的链外请求"一律不记录（审计 2026-09-20 实测）
+  let h = name && sites.get(name);
+  if (!h && name) { h = { name, files: [], external: [], blocked: [], offchain: [], at: 0 }; sites.set(name, h); }
+  if (!h) return;
   push(h.offchain, { url: (url.origin + url.pathname).slice(0, 300), type: e.request.destination || e.request.mode });
 }
 
@@ -230,6 +237,9 @@ async function saveFromForm(req, label) {
   else if (action === 'block' && label) { if (!settings.userBlocklist.includes(label.name)) settings.userBlocklist.push(label.name); sites.delete(label.name); }
   else if (action === 'unblock' && label) { settings.userBlocklist = settings.userBlocklist.filter((n) => n !== label.name); sites.delete(label.name); }
   else {
+    // 开发预览只接受用户真的点了按钮的提交：Sec-Fetch-User: ?1 只有真实用户交互才会带上，
+    // 网站脚本 fetch 出来的 POST 带不了它。原来网站能自己打开它，等名字欠费后照样给老访客显示（审计 2026-09-20）
+    if (req.headers.get('sec-fetch-user') !== '?1') return new Response('forbidden', { status: 403 });
     const wasDev = !!settings.devPreview; settings.devPreview = !!form.get('devPreview');
     if (wasDev !== settings.devPreview) sites.clear();
   }

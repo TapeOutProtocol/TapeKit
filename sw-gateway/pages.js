@@ -15,7 +15,7 @@ const T = {
   offchainHint: { zh: '链上网站可以访问链外的数据（接口、图片、视频流、钱包连接）；这里列出访问过的地址（不含查询参数）。', en: 'On-chain sites may reach off-chain data (APIs, images, video streams, wallet connections); addresses reached are listed here, without query strings.' },
   blocked: { zh: '被拦下的链外代码', en: 'Off-chain code blocked' }, blockedNone: { zh: '没有', en: 'none' },
   blockedHint: { zh: '网站的代码只能来自链上，从链外加载的脚本会被拦下。', en: 'Site code must come from the chain; scripts loaded from off-chain are blocked.' },
-  pure: { zh: '100% 链上', en: '100% on-chain' }, notPure: { zh: '引用了链外资源', en: 'references off-chain resources' },
+  pure: { zh: '本次未发现链外访问', en: 'No off-chain access seen' }, notPure: { zh: '引用了链外资源', en: 'references off-chain resources' },
   nodes: { zh: '节点', en: 'Nodes' }, nodeOk: { zh: '成功', en: 'ok' }, nodeFail: { zh: '失败', en: 'failed' }, nodeRl: { zh: '限流', en: 'rate-limited' }, nodeMs: { zh: '最近耗时', en: 'last latency' }, nodeCool: { zh: '冷却中', en: 'cooling down' },
   quorum: { zh: '每次读取至少 {q} 家运营方给出相同结果才采用', en: 'Every read needs at least {q} independent operators to agree' },
   settings: { zh: '设置（只存在你的浏览器里）', en: 'Settings (stored only in your browser)' },
@@ -39,7 +39,7 @@ const T = {
   blockedReq: { zh: '这个请求指向链外，已被 tape 网关拦截。网关上的链上网站不能访问链外资源。', en: 'This request goes off-chain and was blocked by the tape gateway. On-chain sites on the gateway cannot reach off-chain resources.' },
   devBanner: { zh: '开发预览：这个名字还没开通，只有打开了开发预览的浏览器能看到', en: 'Dev preview: this name is not activated; only browsers with dev preview enabled can see it' },
   statusLink: { zh: '这个网站的状态页：', en: 'Status page for this site:' },
-  notice: { zh: '链上数据是公开的；网关只显示已开通的名字。「已与链上核对」只说明字节与链上一致，不说明网站可信。', en: 'On-chain data is public; the gateway only displays activated names. "Verified" means the bytes match the chain, not that the site is trustworthy.' },
+  notice: { zh: '链上数据是公开的；网关只显示已开通的名字。「已与链上核对」只说明字节与链上一致，不说明网站可信。WebSocket 和跨来源框架不经过网关，看不到也记不到，所以「本次未发现链外访问」不等于「一定没有」。', en: 'On-chain data is public; the gateway only displays activated names. "Verified" means the bytes match the chain, not that the site is trustworthy. WebSocket connections and cross-origin frames do not pass through the gateway, so "no off-chain access seen" does not mean there was none.' },
 };
 
 export const pickLocale = (acceptLanguage, override) => {

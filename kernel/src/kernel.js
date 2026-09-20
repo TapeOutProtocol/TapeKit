@@ -156,7 +156,8 @@ export function createChainKernel(options = {}) {
   const cache = options.cache || createMemoryCache({ maxBytes: options.cacheBytes ?? 64 * 1024 * 1024 });
   const resolveTtl = options.resolveTtlMs ?? 60_000;
   const fileKey = (sha) => `file:v1:${sha}`;
-  const resolveKey = (input) => `resolve:v1:${net.chainId}:${input}`;
+  // 解析结果只放内存（见 resolve 里的说明）：落盘到网站来源的存储里会被网站脚本改写
+  const resolveMem = new Map();
 
   // 身份解析、处理器编号表、多节点读调用都来自 TapeKit 核心（identity.js），与 TapeSend 共用
   const identity = createIdentity({ rpc, network: net, cache, fail: (what) => { throw new SiteError('chain', 'site.chain-call', { what }); } });
@@ -188,11 +189,22 @@ export function createChainKernel(options = {}) {
     const parsed = typeof input === 'string' ? parseInput(input) : input;
     const inputKey = typeof input === 'string' ? input.trim().toLowerCase() : JSON.stringify(freeze(parsed));
     if (!opts.fresh && !opts.block) {
-      const hit = await cache.get(resolveKey(inputKey));
-      if (hit && hit.meta && Date.now() - hit.meta.at < resolveTtl) return thaw(hit.meta.res);
+      // ★ 解析结果（持有人、付费状态、容器地址）只放内存，不落盘：
+      //   落在网站自己的来源里时，网站脚本能改写它——伪造持有人、把 unpaid 改成 ok、
+      //   把时间戳改到未来让它永不过期，还能绕过屏蔽名单（审计 2026-09-20 实测复现）
+      const hit = resolveMem.get(inputKey);
+      if (hit && hit.at <= Date.now() && Date.now() - hit.at < resolveTtl) {
+        // 屏蔽名单每次都查：名单是后来才更新的，命中缓存不能跳过
+        const blocked = isBlocked && hit.res.container && isBlocked({ container: hit.res.container, name: hit.res.name });
+        if (!blocked) return thaw(hit.res);
+        resolveMem.delete(inputKey);
+      }
     }
     const res = await resolveUncached(parsed, typeof input === 'string' ? input : '', opts);
-    if (!opts.block) await cache.set(resolveKey(inputKey), { at: Date.now(), res: freeze(res) }, new Uint8Array());
+    if (!opts.block) {
+      resolveMem.set(inputKey, { at: Date.now(), res: freeze(res) });
+      if (resolveMem.size > 200) resolveMem.delete(resolveMem.keys().next().value);
+    }
     return res;
   }
 
@@ -281,7 +293,12 @@ export function createChainKernel(options = {}) {
     if (info.sha === ZERO32) return null;
     const hit = await cache.get(fileKey(info.sha));
     if (!hit || hit.bytes.length !== info.size) return null;
-    return { path, bytes: hit.bytes, size: info.size, contentType: safeContentType(info.contentType), declaredSha: info.sha, sha256: info.sha, updatedAt: info.updatedAt, verified: true, status: 'ok', fromCache: true };
+    // ★ 必须重新算哈希：缓存所在的来源就是网站代码运行的来源（Service Worker 网关），
+    //   网站脚本能直接改写 IndexedDB。不重算的话，它就能让网关给链上没有的内容盖"已核对"的章。
+    //   几 MB 的文件只要几毫秒，比重新读链便宜得多（审计 2026-09-20 实测复现）
+    const actual = await sha256Hex(hit.bytes);
+    if (actual !== info.sha) { await cache.delete(fileKey(info.sha)); return null; }
+    return { path, bytes: hit.bytes, size: info.size, contentType: safeContentType(info.contentType), declaredSha: info.sha, sha256: actual, updatedAt: info.updatedAt, verified: true, status: 'ok', fromCache: true };
   };
 
   async function verify(path, info, bytes) {
@@ -448,7 +465,7 @@ export function createChainKernel(options = {}) {
           const fbChanged = snap.fallback !== fallback;
           count = snap.count; fallback = snap.fallback;
           if (changed.length || removed.length || added || fbChanged) {
-            for (const k of [res.input, res.name, res.container].filter(Boolean)) await cache.delete(resolveKey(String(k).trim().toLowerCase()));
+            for (const k of [res.input, res.name, res.container].filter(Boolean)) resolveMem.delete(String(k).trim().toLowerCase());
             await onChange({ changed, removed, added, fallbackChanged: fbChanged, count: snap.count, block });
           }
         }

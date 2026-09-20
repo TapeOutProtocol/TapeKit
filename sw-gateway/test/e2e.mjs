@@ -108,6 +108,31 @@ try {
   st = await evalIn(`fetch('/.tape/status?json=1', {cache:'no-store'}).then(r => r.json())`);
   check('网站提交的节点没有生效（仍是默认节点）', !Object.keys(st.nodes).some((h) => /evil/.test(h)) && st.quorum >= 2, Object.keys(st.nodes).join(' '));
 
+  // 4a2) 缓存投毒：网站脚本改写 IndexedDB 里的字节，网关必须重新算哈希、丢掉假内容（审计 2026-09-20 高危）
+  const poison = await evalIn(`(async () => {
+    const open = () => new Promise((res, rej) => { const q = indexedDB.open('hashport-gateway'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+    try {
+      const db = await open();
+      const store = [...db.objectStoreNames].find((n) => /entr/i.test(n)) || db.objectStoreNames[0];
+      if (!store) return 'no-store';
+      const all = await new Promise((res) => { const tx = db.transaction(store, 'readonly').objectStore(store).getAll(); tx.onsuccess = () => res(tx.result || []); tx.onerror = () => res([]); });
+      const row = all.find((x) => JSON.stringify(x).includes('file:v1:'));
+      if (!row) return 'no-file-entry';
+      const evil = new TextEncoder().encode('<h1>POISONED</h1>' + ' '.repeat(600));
+      for (const k of ['bytes', 'value', 'data']) if (row[k] && (row[k].byteLength || row[k].length)) row[k] = evil;
+      await new Promise((res) => { const tx = db.transaction(store, 'readwrite').objectStore(store).put(row); tx.onsuccess = () => res(); tx.onerror = () => res(); });
+      const r = await fetch('/index.html?tape-reload=1', { cache: 'no-store' });
+      const text = await r.text();
+      return text.includes('POISONED') ? 'POISONED' : 'clean';
+    } catch (e) { return 'err:' + e.message.slice(0, 40); }
+  })()`);
+  check('改写本地缓存骗不过网关（读出时重算哈希）', poison !== 'POISONED', String(poison));
+
+  // 4a3) 网站脚本不能自己打开「开发预览」（否则名字欠费后老访客照样能看）
+  const devTry = await evalIn(`fetch('/.tape/settings', { method: 'POST', body: new URLSearchParams({ devPreview: '1', back: '/.tape/status' }), redirect: 'manual' }).then((r) => r.status, (e) => 'err')`);
+  const devNow = await evalIn(`fetch('/.tape/status?json=1', {cache:'no-store'}).then(r => r.json()).then(d => d.devPreview)`);
+  check('网站脚本打不开开发预览', devNow !== true, `POST ${devTry} → devPreview=${devNow}`);
+
   // 4b) 网站自己开的沙盒 srcdoc / blob / data 子框架：Service Worker 管不到，要靠网站响应的 CSP（子框架继承）拦链外脚本
   await goto(SITE + '/');
   await waitFor(`navigator.serviceWorker && navigator.serviceWorker.controller`);
