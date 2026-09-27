@@ -8,13 +8,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import server from '../dev-server.mjs';
+import { createKernel } from '../../kernel/src/index.js';
 
 const PORT = 8096;
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const SITE = `http://4246-0.localhost:${PORT}`;
 const OTHER = `http://1-0.localhost:${PORT}`;
 const ROOT = `http://localhost:${PORT}`;
-const INDEX_SHA = 'ec444c899bd9229f9173082fff362da66dd297179482a58b30b6f53ce9f7a0b6';   // SPEC §14：4246.0.tape 的 index.html
 
 const results = [];
 const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); console.log(`${ok ? '✅' : '❌'} ${name}${detail ? '  — ' + detail : ''}`); };
@@ -63,7 +63,9 @@ try {
   const page = await evalIn(`fetch('/index.html', {cache:'no-store'}).then(async r => ({ status: r.status, name: r.headers.get('x-tape-name'), verified: r.headers.get('x-tape-verified'), sha: r.headers.get('x-tape-sha256'), ct: r.headers.get('content-type'), bytes: Array.from(new Uint8Array(await r.arrayBuffer())) }))`);
   const sha = createHash('sha256').update(Buffer.from(page.bytes)).digest('hex');
   check('index.html 字节与链上声明的 SHA-256 一致（网关已校验）', '0x' + sha === page.sha && page.verified === '1', `${page.bytes.length} B · ${sha.slice(0, 12)}… · ${page.ct}`);
-  check('与规范 §14 的测试向量一致', sha === INDEX_SHA, sha === INDEX_SHA ? '' : `链上文件已更新：现在 ${page.bytes.length} B，sha ${sha}；规范里的向量要跟着改`);
+  // 样例站会被站长更新，大小和哈希不写死：在 Node 里用内核另读一次链上声明值，和浏览器经网关拿到的字节比对
+  const onChain = await (async () => { const nk = createKernel(); const r = await nk.resolve('4246.0.tape'); return (await nk.getFile(r, await nk.manifest(r), 'index.html')) || { error: 'Node 端读不到 index.html' }; })().catch((e) => ({ error: String(e && e.message || e) }));
+  check('与 Node 端另读的链上声明值一致', !onChain.error && onChain.verified && '0x' + sha === onChain.declaredSha && page.bytes.length === onChain.size, onChain.error || `链上声明 ${onChain.size} B · ${onChain.declaredSha}；浏览器 ${page.bytes.length} B · 0x${sha}`);
   check('响应头带链上名字', page.name === '4246.0.tape', page.name);
   const docSha = createHash('sha256').update(Buffer.from(await evalIn(`fetch(location.href, {cache:'no-store'}).then(r => r.arrayBuffer()).then(b => Array.from(new Uint8Array(b)))`))).digest('hex');
   check('当前页面本身也是链上那份', docSha === sha);

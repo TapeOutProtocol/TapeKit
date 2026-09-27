@@ -37,7 +37,7 @@ Run the first three before every pull request; run the last two when you touch t
 - Function selectors and event topics are hard-coded in `kernel/src/selectors.js` and re-derived by the unit tests: if you add a call, add it to both `SIG` and `SEL`.
 - Status pages and notice pages in the gateway must stay **script-free**; the bootstrap must stay free of external resources.
 - Update `kernel/index.d.ts` when you change a public signature, and `README.md` when behaviour visible to site owners or kernel users changes.
-- Update the test vectors in SPEC §14 and `kernel/test/mainnet.test.mjs` together if the sample site changes.
+- If the sample site changes, update the test vectors in SPEC §14. `kernel/test/mainnet.test.mjs` and `sw-gateway/test/e2e.mjs` read the declared size and hash from chain and do not need changing.
 
 ## Pull requests
 

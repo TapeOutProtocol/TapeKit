@@ -305,7 +305,7 @@ tape://<#ID>.<处理器编号>.tape/<路径>
 | `4246.0.tape` | 处理器 0（Genesis CPU），#4246，容器 `0x86DDaEF00401E3F10418398D67D7189fc458eA95` |
 | `0x86DDaEF00401E3F10418398D67D7189fc458eA95` | 反查得 `4246.0.tape` |
 | `4246.0.tape` 的文件清单 | 只有 `index.html`，fallback 为 `index.html` |
-| `index.html` | 756 字节，SHA-256 `0xec444c899bd9229f9173082fff362da66dd297179482a58b30b6f53ce9f7a0b6` |
+| `index.html` | 19,770 字节，SHA-256 `0x275c896aa347670b19e8ed11256165dbabadb0f9e3c947370b591130acb507b8` |
 | `tape://4246.0.tape/some/route` | 落地到 `index.html`（§6 第 4.3 步） |
 | `tape://4246.0.tape/missing.png` | 404（有扩展名，不走 fallback） |
 | `1.999999` | `no-such-cpu` |
@@ -313,7 +313,7 @@ tape://<#ID>.<处理器编号>.tape/<路径>
 | `0x000000000000000000000000000000000000dEaD` | `not-tapeout` |
 | `04246.0`、`0.0.tape`、`4246` | 输入错误 |
 
-`4246.0.tape` 当前是 `ok`（容器已付费，`paidVia: container`，2026-09-13 起）。向量对应链上 2026-09-13 09:44 UTC 更新后的文件；站长再更新时要同步改这里和 `kernel/test/mainnet.test.mjs`。
+`4246.0.tape` 当前是 `ok`（容器已付费，`paidVia: container`，2026-09-13 起）。向量对应链上 2026-09-21 09:00 UTC 更新后的文件；站长再更新时要改这里。`kernel/test/mainnet.test.mjs` 和 `sw-gateway/test/e2e.mjs` 从链上读声明的大小和哈希，不用跟着改。
 
 ## 15. 变更规则
 
