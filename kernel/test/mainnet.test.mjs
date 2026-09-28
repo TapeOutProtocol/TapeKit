@@ -1,11 +1,13 @@
 // 主网只读实测：连公共节点做 eth_call，不发交易、不需要任何密钥。
-// 样例站点：test.hashport.ai 绑定的容器 = 0 号处理器（Genesis CPU）的 #4246，只有一个 index.html（756 字节）。
+// 样例站点：test.hashport.ai 绑定的容器 = 0 号处理器（Genesis CPU）的 #4246，只有一个 index.html。
+// index.html 的大小和哈希随站长更新而变，这里不写死：读链上声明值，再用 node:crypto 独立算一遍比对。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createKernel } from '../src/index.js';
 
 const CONTAINER = '0x86ddaef00401e3f10418398d67d7189fc458ea95';
-const INDEX_SHA = '0xec444c899bd9229f9173082fff362da66dd297179482a58b30b6f53ce9f7a0b6';
+const sha256 = (bytes) => '0x' + createHash('sha256').update(bytes).digest('hex');
 const k = createKernel();
 
 test('名字 4246.0.tape → 容器、处理器、持有人；付费状态如实返回', async () => {
@@ -35,9 +37,12 @@ test('清单与文件读取，SHA-256 与链上一致', async () => {
   assert.equal(man.fallback, 'index.html');
   const f = await k.getFile(r, man, '');
   assert.equal(f.path, 'index.html');
-  assert.equal(f.size, 756);
-  assert.equal(f.sha256, INDEX_SHA);
+  assert.equal(f.status, 'ok');
   assert.equal(f.verified, true);
+  assert.equal(f.bytes.length, f.size);   // 链上声明的大小
+  assert.match(f.declaredSha, /^0x[0-9a-f]{64}$/);
+  assert.equal(f.sha256, f.declaredSha);
+  assert.equal(sha256(f.bytes), f.declaredSha);   // 独立实现再算一遍
   assert.match(new TextDecoder().decode(f.bytes), /<html/i);
   const spa = await k.getFile(r, man, 'some/route');   // 单页路由退回 index.html
   assert.equal(spa.path, 'index.html');
@@ -80,7 +85,7 @@ test('按需读取 openSite：只取清单，用到才读；第二个内核用�
   const r2 = await k2.resolve('4246.0.tape');   // 解析结果命中缓存
   const site2 = await k2.openSite(r2);
   const f2 = await site2.get('index.html');
-  assert.equal(f2.fromCache, true); assert.equal(f2.sha256, INDEX_SHA);
+  assert.equal(f2.fromCache, true); assert.equal(f2.sha256, f.sha256); assert.equal(f2.declaredSha, f.declaredSha);
 });
 
 test('双语状态', async () => {

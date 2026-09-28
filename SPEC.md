@@ -305,7 +305,7 @@ Only then is "100% on-chain" shown; otherwise the shell shows "references off-ch
 | `4246.0.tape` | processor 0 (Genesis CPU), #4246, container `0x86DDaEF00401E3F10418398D67D7189fc458eA95` |
 | `0x86DDaEF00401E3F10418398D67D7189fc458eA95` | reverse-resolves to `4246.0.tape` |
 | file list of `4246.0.tape` | only `index.html`, fallback `index.html` |
-| `index.html` | 756 bytes, SHA-256 `0xec444c899bd9229f9173082fff362da66dd297179482a58b30b6f53ce9f7a0b6` |
+| `index.html` | 19,770 bytes, SHA-256 `0x275c896aa347670b19e8ed11256165dbabadb0f9e3c947370b591130acb507b8` |
 | `tape://4246.0.tape/some/route` | lands on `index.html` (§6 step 4.3) |
 | `tape://4246.0.tape/missing.png` | 404 (has an extension, no fallback) |
 | `1.999999` | `no-such-cpu` |
@@ -313,7 +313,7 @@ Only then is "100% on-chain" shown; otherwise the shell shows "references off-ch
 | `0x000000000000000000000000000000000000dEaD` | `not-tapeout` |
 | `04246.0`, `0.0.tape`, `4246` | input error |
 
-`4246.0.tape` is currently `ok` (container paid, `paidVia: container`, since 2026-09-13). The vector corresponds to the file as updated on chain at 2026-09-13 09:44 UTC; when the owner updates it again, update this table and `kernel/test/mainnet.test.mjs` together.
+`4246.0.tape` is currently `ok` (container paid, `paidVia: container`, since 2026-09-13). The vector corresponds to the file as updated on chain at 2026-09-21 09:00 UTC; when the owner updates it again, update this table. `kernel/test/mainnet.test.mjs` and `sw-gateway/test/e2e.mjs` read the declared size and hash from chain and do not need changing.
 
 ## 15. Change rules
 
