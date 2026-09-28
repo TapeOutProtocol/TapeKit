@@ -229,15 +229,27 @@ const file = await site.get('index.html');           // bytes verified against t
 
 ### Mainnet constants / 主网常量
 
-BNB Smart Chain, chainId 56. Full list and pinned implementations in [SPEC.md §3.1 and §4.3](SPEC.md#31-mainnet-constants).
+Tapekit supports three chains. On chains other than BNB Smart Chain, a name carries the chain's area code between the #ID and the processor number.
 
-| Contract | Address |
-|---|---|
-| Processor factory | `0x68224F668083c29e9800Be2a646d42d18cedF7e2` |
-| Container opener | `0x021745DE2f42A7839d96f2d3634d0294487D81F1` |
-| SiteRegistry (proxy) | `0xd006ffdd5Ae313B17729621A00999cD3C71CE5e6` |
-| DomainBinding (proxy) | `0x861EE183de2BBE4a6ecf9D15812C123b566a3DB7` |
-| Sample site | `4246.0.tape` = container `0x86DDaEF00401E3F10418398D67D7189fc458eA95` |
+| Chain | chainId | Name format | Example name |
+|---|---|---|---|
+| BNB Smart Chain | 56 | `<#ID>.<processor>` (no area code) | `4246.0` |
+| X Layer | 196 | `<#ID>.2.<processor>` (area code 2) | `1.2.0` |
+| Base | 8453 | `<#ID>.3.<processor>` (area code 3) | `1.3.1` |
+
+The on-chain name adds `.tape` (`4246.0.tape`, `1.2.0.tape`); `#4246@0` and `#1@2.0` are accepted as input too. The X Layer and Base examples show the format; they are not sample sites.
+
+X Layer and Base use the same contract addresses: the same account deployed them in the same order on both chains.
+
+| Contract | BNB Smart Chain | X Layer and Base |
+|---|---|---|
+| Processor factory | `0x68224F668083c29e9800Be2a646d42d18cedF7e2` | `0x1f09DAeFA827f02CBb40967cc91b259763760761` |
+| Container opener | `0x021745DE2f42A7839d96f2d3634d0294487D81F1` | `0x536adD8F30f03b69f6fbF29d425A816A0dC50106` |
+| SiteRegistry (proxy) | `0xd006ffdd5Ae313B17729621A00999cD3C71CE5e6` | `0xd6EFb7adCc9c83dC4924Ad56f6a8E4e969b9ADB6` |
+| DomainBinding (proxy) | `0x861EE183de2BBE4a6ecf9D15812C123b566a3DB7` | `0x68809Fd2fb343aA57D0aeB7f33Defe477c9666f9` |
+| Sample site | `4246.0.tape` = container `0x86DDaEF00401E3F10418398D67D7189fc458eA95` | — |
+
+Full list and pinned implementations for BNB Smart Chain: [SPEC.md §3.1 and §4.3](SPEC.md#31-mainnet-constants). SPEC v0.2 describes BNB Smart Chain only; the pinned implementations for X Layer and Base are `L2_CONTRACTS.expectedImpl` in [kernel/src/config.js](kernel/src/config.js).
 
 ### Status and roadmap / 状态与路线
 
