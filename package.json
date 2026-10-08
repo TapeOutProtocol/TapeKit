@@ -7,6 +7,8 @@
   "scripts": {
     "test": "cd kernel && node --test test/unit.test.mjs && cd .. && node --test wallet/test/*.test.mjs sw-gateway/test/*.test.mjs",
     "test:wallet": "node --test wallet/test/*.test.mjs",
+    "test:wallet:e2e": "node wallet/test/e2e.mjs",
+    "build:wallet-client": "node wallet/build-client.mjs",
     "test:mainnet": "cd kernel && node --test test/mainnet.test.mjs",
     "test:e2e": "cd sw-gateway && node test/e2e.mjs",
     "build:extension": "node build-extension.mjs",

@@ -22,13 +22,14 @@ Node ≥ 18 (the tests use Node's built-in test runner). Google Chrome is needed
 
 | Command | What it checks | Needs network |
 |---|---|---|
-| `npm test` | kernel unit tests (encoding, name parsing, path rules, node agreement, retries, cache) | no |
+| `npm test` | kernel unit tests (encoding, name parsing, path rules, node agreement, retries, cache), wallet router and gateway unit tests, and that `wallet/client.js` matches its sources (`npm run build:wallet-client`) | no |
 | `npm run test:types` | `kernel/index.d.ts` compiles against a sample program | no |
 | `npm run build:extension` | the extension assembles and no import leaves the package | no |
 | `npm run test:mainnet` | kernel against BNB Chain mainnet, read-only, no keys | yes (public nodes) |
 | `npm run test:e2e` | Service Worker gateway in real headless Chrome against mainnet | yes, plus Chrome |
+| `npm run test:wallet:e2e` | wallet router (hub and `wallet/client.js`) in real headless Chrome, mainnet read-only, fake wallet | yes, plus Chrome |
 
-Run the first three before every pull request; run the last two when you touch the kernel's chain code or the gateway. CI runs the offline checks on every push and pull request, and the mainnet checks as a non-blocking job.
+Run the first three before every pull request; run the mainnet and end-to-end checks when you touch the kernel's chain code, the gateway or `wallet/`. CI runs the offline checks on every push and pull request, and the mainnet checks as a non-blocking job.
 
 ## Making changes
 
@@ -53,4 +54,4 @@ Maintainers tag releases (`vX.Y.Z`). A release note lists specification changes,
 
 ---
 
-中文摘要：改规范先开 issue 或只改规范的 PR，§15.1 的承诺不动，中英文同步；涉及校验、隔离、节点核对的改动要写清理由并附会失败的测试。`npm install` 后先跑 `npm test`、`npm run test:types`、`npm run build:extension`；碰链上代码或网关再跑 `test:mainnet` 和 `test:e2e`。内核运行时零依赖、浏览器和 Node 都要能跑；新增合约调用要同时改 `SIG` 和 `SEL`；网关状态页不能有脚本。一个 PR 一件事，提交信息一行祈使句摘要，提交必须是本人、不带机器人或合作者署名。贡献即同意代码 MIT、规范文本 CC0。
+中文摘要：改规范先开 issue 或只改规范的 PR，§15.1 的承诺不动，中英文同步；涉及校验、隔离、节点核对的改动要写清理由并附会失败的测试。`npm install` 后先跑 `npm test`、`npm run test:types`、`npm run build:extension`；碰链上代码或网关再跑 `test:mainnet` 和 `test:e2e`，碰 `wallet/` 再跑 `test:wallet:e2e`。内核运行时零依赖、浏览器和 Node 都要能跑；新增合约调用要同时改 `SIG` 和 `SEL`；网关状态页不能有脚本。一个 PR 一件事，提交信息一行祈使句摘要，提交必须是本人、不带机器人或合作者署名。贡献即同意代码 MIT、规范文本 CC0。

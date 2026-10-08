@@ -34,6 +34,7 @@
   - [9. Test before you pay / 付费前自测](#9-test-before-you-pay--付费前自测)
   - [10. Verify your own site / 核对自己的站](#10-verify-your-own-site--核对自己的站)
   - [11. Update, transfer, take down / 更新、转让、下线](#11-update-transfer-take-down--更新转让下线)
+  - [12. TapeKit wallet for site owners / 给站长的 TapeKit 钱包](#12-tapekit-wallet-for-site-owners--给站长的-tapekit-钱包)
 - [Kernel API reference / 内核 API 参考](#kernel-api-reference--内核-api-参考)
   - [Install and import / 安装与引入](#install-and-import--安装与引入)
   - [createKernel(options)](#createkerneloptions)
@@ -184,6 +185,7 @@ Section guide / 章节导读:
 | [`sw-gateway/`](sw-gateway/) | **Service Worker gateway** | Lets ordinary Chrome / Edge / Firefox / Safari open on-chain sites with nothing installed, one real origin per site. Bootstrap page, Service Worker, script-free status pages, operator config, deployment rules, end-to-end test in real headless Chrome. See [sw-gateway/README.md](sw-gateway/README.md) |
 | [`extension/`](extension/) | **Browser extension** (Chrome MV3) | Address-bar keyword `tape`; verifies that the current https page matches the on-chain bytes; optional gateway domain setting. Build with `node build-extension.mjs` → `dist/extension/` |
 | [`viewer/`](viewer/) | **Web viewer** (preview mode) | Sandboxed-iframe shell with an opaque origin and strict CSP; the fallback when there is no extension and no gateway |
+| [`wallet/`](wallet/) | **Wallet router** | One wallet page on the gateway root (`/.tape/wallet/`) that every site's wallet requests go through, so OKX Wallet or Binance Wallet is connected once. `wallet/client.js` is the script site owners bundle (section 12 of the handbook). Tests: `wallet/test/*.test.mjs` (offline), `wallet/test/e2e.mjs` (headless Chrome, mainnet read-only) |
 | [`kernel/src/identity.js`](kernel/src/identity.js) | **Identity core** | Name → container resolution shared by the page kernel and TapeSend, so one name always means one container |
 | [`send/`](send/) | **TapeSend · DeWEB messaging layer** | Messages between containers, recorded in an on-chain inbox on the sender's chain. See [send/README.md](send/README.md) |
 | [`send/contracts/`](send/contracts/) | DeWEB hub | `DeWebHub` (UUPS proxy, same address on every chain). Foundry project: unit, fuzz, invariant and BSC fork tests, pinned-address test, deterministic deployment page (signed in a browser wallet) |
@@ -203,6 +205,7 @@ npm test               # kernel unit tests, offline
 npm run test:mainnet   # kernel mainnet read-only tests (no keys, no transactions)
 npm run dev:gateway    # Service Worker gateway on http://localhost:8096  → try http://4246-0.localhost:8096/
 npm run test:e2e       # gateway end-to-end test in real headless Chrome (needs Google Chrome installed)
+npm run test:wallet:e2e   # wallet router end-to-end test (headless Chrome, mainnet read-only, fake wallet)
 npm run dev:viewer     # preview-mode viewer on http://127.0.0.1:8095/viewer/
 npm run build:extension
 ```
@@ -398,6 +401,33 @@ node -e "import('./kernel/src/index.js').then(async ({createKernel}) => { const 
 - **Take down**: `removeFile` every path. There is no other way: the chain keeps history, and clients read current state only. `unbind` stops a domain but does not lower the container's activation, so the on-chain name stays live until it expires.
 
 > 中文：更新 = 重新 `putFile`（整体替换）；读者钉住区块，看不到半新半旧。转让 NFT，网站、容器、剩余开通时间一起走；挂单期间不能改。下线只能 `removeFile` 删文件；`unbind` 只停域名，不影响链上名字的开通期。
+
+### 12. TapeKit wallet for site owners / 给站长的 TapeKit 钱包
+
+**What it is.** Wallet extensions remember permissions per origin, and every on-chain site is its own origin, so today users connect their wallet again on every site. With the TapeKit wallet, the user connects OKX Wallet or Binance Wallet once, on the TapeKit wallet page at the gateway root (`https://<gateway>/.tape/wallet/`). Your site then sees one standard wallet named **TapeKit**: an EIP-1193 provider, announced with EIP-6963 (`rdns` `org.tapekit`) and also at `window.tapekit.wallet`. It never touches `window.ethereum`. TapeKit holds no keys: it routes requests, keeps per-site permissions, and shows your site's on-chain identity (name, processor, container), never the page title.
+
+**Two ways your site gets it.**
+- **The TapeKit extension** (coming in a later release): adds the wallet to every gateway site automatically; nothing to change on your site.
+- **The bundled client script** (available now): copy [`wallet/client.js`](wallet/client.js) into your site as `tapekit-wallet.js` and load it with `<script src="tapekit-wallet.js"></script>`. One file, about 20 KB, no dependencies. It opens the TapeKit page in a small popup when it needs it. Browsers only allow popups from a click, so connect, sign and chain-switch requests must come from a button the user clicks. Wallet libraries that support EIP-6963 list "TapeKit" without code changes.
+
+**What the user confirms.**
+- Connect: when the user's click on your connect button opens the TapeKit window, the site gets the address at once, and TapeKit shows a notice for 5 seconds with your site's identity and a Revoke button. A connect request without a click fails with 4100. While the TapeKit window is already open, only the request that opened it counts as a click, so a new connect request gets an Allow / Reject dialog instead. A site the user already connected gets its address with no prompt. Users can revoke any site on the TapeKit page.
+- Every signature or transaction: a TapeKit card first shows your site's identity and the request; the wallet opens only after the user clicks Continue.
+- Chains: BNB Chain (`0x38`), X Layer (`0xc4`) and Base (`0x2105`). `wallet_switchEthereumChain` changes only your site's chain; the wallet is switched (or the chain added) at signing time. Read calls (`eth_call`, `eth_getBalance`, …) go straight to a public node of your site's current chain, without a popup. `eth_chainId` and `eth_accounts` are answered in the page; `eth_accounts` is `[]` until the TapeKit window has answered once in this page session, so show a Connect button.
+
+**Error codes your site may see** (`code` on the rejected error). When the popup is blocked (4100), the TapeKit window is closed (4001) or does not load within 20 seconds (4900), the error also has `data.reason` and `data.messages`, the text in Chinese and English for you to show:
+
+| Code | When |
+|---|---|
+| 4001 | The user rejected (TapeKit card or dialog, or in the wallet), or closed the TapeKit window (`data.reason: 'closed'`) |
+| 4100 | No click, so the popup was blocked (`data.reason: 'popup'`); the site is not connected; the address is not the one granted; the wallet account changed; the site's on-chain status is not `ok` (`data.status`) |
+| 4200 | Method not supported (`eth_sign`, `eth_signTypedData` v1, `eth_signTransaction`, `wallet_sendCalls`, …) |
+| 4900 | No supported wallet installed; or the TapeKit window did not load within 20 seconds (`data.reason: 'load'`; the script closes it) |
+| 4901 | The request names another chain than your site's current one |
+| 4902 | Chain not supported |
+| -32602 / -32005 / -32603 | Invalid or oversized (over 256 KB) params / more than 4 pending requests / internal error, or the public node did not answer (a node's own error, such as `3` execution reverted, is passed through) |
+
+> 中文：钱包插件按来源记授权，每个链上网站都是独立来源，所以现在每个网站都要再连一次钱包。有了 TapeKit 钱包，用户只在网关根域名的 TapeKit 钱包页（`/.tape/wallet/`）连一次 OKX 或币安钱包；网站看到的是一个叫 **TapeKit** 的标准钱包（EIP-1193，用 EIP-6963 登记，`rdns` 为 `org.tapekit`，也挂在 `window.tapekit.wallet`），不碰 `window.ethereum`。TapeKit 不保存密钥，只负责转发、按网站记授权、显示网站的链上身份。网站有两种方式拿到它：TapeKit 扩展（后续版本提供，网站不用改）；或者现在就把 `wallet/client.js` 复制进网站文件，命名为 `tapekit-wallet.js` 并用 `<script>` 引入（一个文件，约 20 KB，无依赖）。它需要时会弹出 TapeKit 小窗口，浏览器只允许点击触发弹窗，所以连接、签名、切链都要由用户点按钮发起。用户亲手点“连接”即授权，同时弹出 5 秒自动关闭、可撤销的身份提示；没有点击的连接请求返回 4100；TapeKit 窗口已经开着时，只有打开它的那个请求算点击，新的连接请求改为弹确认框；已授权的网站直接拿到地址。每次签名或交易先出 TapeKit 卡片，点“继续”后才到钱包。支持 BNB Chain、X Layer、Base；只读请求直接发到网站当前链的公共节点；本页还没打开过 TapeKit 窗口时 `eth_accounts` 为空，请显示“连接”按钮。可能收到的错误码见上表：4001 用户拒绝（卡片、确认框或钱包里）或关掉窗口；4100 没点击被拦弹窗、未授权、地址不对、账户已变、网站状态不是 `ok`；4200 不支持的方法；4900 没装受支持的钱包，或 TapeKit 窗口 20 秒内没加载出来（小脚本会关掉它）；4901 链不一致；4902 不支持的链。弹窗被拦、窗口被关、没加载出来这三种情况，错误里带 `data.reason` 和中英文提示 `data.messages`。
 
 ---
 
