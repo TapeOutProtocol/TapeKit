@@ -1,0 +1,46 @@
+/* TapeKit wallet hub. Same look as the gateway landing page: white, system fonts, no borders. Loaded as a
+   file because the hub CSP is style-src 'self' (no inline styles). */
+:root { color-scheme: light; }
+html { background: #fff; }
+body { margin: 0; color: #0f1419; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+main { max-width: 560px; margin: 0 auto; padding: 20px 18px 40px; }
+h1 { font-size: 22px; line-height: 1.2; font-weight: 800; margin: 0 0 6px; }
+h2 { font-size: 18px; line-height: 1.3; font-weight: 800; margin: 0 0 12px; }
+p { margin: 0 0 12px; }
+[hidden] { display: none !important; }
+.hint { color: #536471; font-size: 14px; }
+.mono, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+pre { white-space: pre-wrap; word-break: break-all; background: #f7f9f9; border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; max-height: 220px; overflow: auto; }
+
+.panel { margin: 18px 0; }
+.card { background: #f7f9f9; border-radius: 18px; padding: 16px 18px; margin: 16px 0; }
+.card pre { background: #fff; }
+
+dl.rows { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; }
+dl.rows dt { color: #536471; font-size: 14px; }
+dl.rows dd { margin: 0; word-break: break-all; }
+
+.warn { color: #b0061b; background: #fdecee; border-radius: 12px; padding: 10px 12px; font-weight: 600; }
+.status { color: #b0061b; font-size: 14px; }
+
+.actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+button { font: inherit; font-weight: 700; padding: 9px 20px; border-radius: 9999px; border: 0; background: #0f1419; color: #fff; cursor: pointer; }
+button:hover { background: #272c30; }
+button:focus-visible { outline: 3px solid #1d9bf0; outline-offset: 2px; }
+button:disabled { background: #cfd9de; color: #fff; cursor: not-allowed; }
+button.plain { background: #fff; color: #0f1419; box-shadow: inset 0 0 0 1px #cfd9de; }
+button.plain:hover { background: #eff3f4; }
+button.small { padding: 4px 12px; font-size: 14px; }
+
+ul.list { list-style: none; padding: 0; margin: 0; }
+ul.list li { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eff3f4; }
+ul.list .what { min-width: 0; }
+ul.list .what > * { display: block; word-break: break-all; }
+
+.picks { display: flex; flex-wrap: wrap; gap: 10px; }
+.store { user-select: all; }
+
+.toast { position: fixed; left: 12px; right: 12px; bottom: 12px; max-width: 536px; margin: 0 auto; background: #0f1419; color: #fff; border-radius: 16px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, .25); }
+.toast dl.rows dt { color: #a8b3ba; }
+.toast .actions { margin-top: 6px; }
+.toast button { background: #fff; color: #0f1419; }
