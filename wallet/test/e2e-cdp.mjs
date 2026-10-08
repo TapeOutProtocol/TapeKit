@@ -1,8 +1,11 @@
-// Raw-CDP harness for wallet/test/e2e.mjs (same approach as sw-gateway/test/e2e.mjs, no dependencies).
-// Starts headless Chrome with a fresh profile, auto-attaches to every new page (tabs and the hub popups a page
-// opens) before it runs, and prepares each page the same way: scripts injected at document start, a binding
-// the fake wallet reports through, and focus emulation (headless windows are never focused, and the hub only
-// enables its confirm buttons in a focused window).
+// Raw-CDP harness for wallet/test/e2e.mjs and e2e-extension.mjs (same approach as sw-gateway/test/e2e.mjs, no
+// dependencies). Starts headless Chrome with a fresh profile, auto-attaches to every new page (tabs and the hub
+// popups a page opens) before it runs, and prepares each page the same way: scripts injected at document start, a
+// binding the fake wallet reports through, and focus emulation (headless windows are never focused, and the hub
+// only enables its confirm buttons in a focused window).
+// With `extensionPath` (one path or a list), extensions are enabled and those unpacked extensions are loaded
+// over CDP (Extensions.loadUnpacked, needs --enable-unsafe-extension-debugging; works on branded Chrome 137+,
+// where the --load-extension flag is ignored). Service worker sessions are listed in `workers`.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,14 +26,16 @@ export async function until(fn, ms = 20_000, step = 100) {
 }
 
 /**
- * @param {{ pageScripts: string[], binding: string }} opts
- *   pageScripts  sources added with Page.addScriptToEvaluateOnNewDocument to every page (they self-select)
- *   binding      name of the Runtime binding; its calls land in `bindingCalls`
+ * @param {{ pageScripts: string[], binding: string, extensionPath?: string|string[]|null }} opts
+ *   pageScripts    sources added with Page.addScriptToEvaluateOnNewDocument to every page (they self-select)
+ *   binding        name of the Runtime binding; its calls land in `bindingCalls`
+ *   extensionPath  unpacked extension(s) to load (absolute paths); without it, extensions are disabled
  */
-export async function startBrowser({ pageScripts, binding }) {
+export async function startBrowser({ pageScripts, binding, extensionPath = null }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'tapekit-wallet-e2e-'));
+  const extensionFlags = extensionPath ? ['--enable-unsafe-extension-debugging'] : ['--disable-extensions'];
   const chrome = spawn(CHROME, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
-    '--no-default-browser-check', '--disable-extensions', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    '--no-default-browser-check', ...extensionFlags, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const wsUrl = await new Promise((res, rej) => {
     let buf = '';
     chrome.stderr.on('data', (d) => { buf += d; const m = buf.match(/DevTools listening on (ws:\/\/\S+)/); if (m) res(m[1]); });
@@ -44,6 +49,7 @@ export async function startBrowser({ pageScripts, binding }) {
   const waiting = new Map();
   const pages = new Map();       // targetId → { targetId, sessionId, openerId, url, closed, ready }
   const frames = [];             // { sessionId, url } of out-of-process iframes
+  const workers = [];            // { targetId, sessionId, url, closed } of service workers (gateway and extension)
   const bindingCalls = [];       // { sessionId, payload }
   const errors = [];             // { sessionId, text }: uncaught exceptions, console.error, error log entries
   const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
@@ -72,6 +78,7 @@ export async function startBrowser({ pageScripts, binding }) {
     // Workers, service workers and out-of-process frames: just let them run (Runtime.enable on a paused
     // service worker never answers, which would leave the gateway's worker stuck before it starts).
     if (info.type === 'iframe') frames.push({ sessionId: s, url: info.url });
+    if (info.type === 'service_worker') workers.push({ targetId: info.targetId, sessionId: s, url: info.url, closed: false });
     await send('Runtime.runIfWaitingForDebugger', {}, s).catch(() => {});
   }
 
@@ -86,6 +93,7 @@ export async function startBrowser({ pageScripts, binding }) {
     if (m.method === 'Target.attachedToTarget') onAttached(p);
     else if (m.method === 'Target.targetInfoChanged' && pages.has(p.targetInfo.targetId)) pages.get(p.targetInfo.targetId).url = p.targetInfo.url;
     else if (m.method === 'Target.targetDestroyed' && pages.has(p.targetId)) pages.get(p.targetId).closed = true;
+    else if (m.method === 'Target.targetDestroyed') { for (const w of workers) if (w.targetId === p.targetId) w.closed = true; }
     else if (m.method === 'Runtime.bindingCalled' && p.name === binding) bindingCalls.push({ sessionId: m.sessionId, payload: p.payload });
     else if (m.method === 'Runtime.exceptionThrown') errors.push({ sessionId: m.sessionId, text: p.exceptionDetails.exception?.description || p.exceptionDetails.text });
     else if (m.method === 'Runtime.consoleAPICalled' && p.type === 'error') errors.push({ sessionId: m.sessionId, text: p.args.map((a) => a.value ?? a.description).join(' ') });
@@ -93,6 +101,9 @@ export async function startBrowser({ pageScripts, binding }) {
   });
   await send('Target.setDiscoverTargets', { discover: true });
   await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+  const extensionIds = [];
+  for (const p of extensionPath ? [extensionPath].flat() : []) extensionIds.push((await send('Extensions.loadUnpacked', { path: p })).id);
+  const extensionId = extensionIds[0] || null;
 
   /** Evaluate in a page; the value comes back as JSON text so arrays and objects survive intact. */
   async function evaluate(sessionId, expr) {
@@ -104,6 +115,7 @@ export async function startBrowser({ pageScripts, binding }) {
   /** A real click (trusted input, so it carries user activation) at the centre of `selector`. */
   async function click(sessionId, selector) {
     const at = await evaluate(sessionId, `(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return null;
+      e.scrollIntoView({ block: 'center', inline: 'center' });
       const b = e.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
     if (!at) throw new Error('no element ' + selector);
     await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y, button: 'none' }, sessionId);
@@ -131,5 +143,5 @@ export async function startBrowser({ pageScripts, binding }) {
     try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* left for the OS */ }
   }
 
-  return { send, pages, frames, bindingCalls, errors, evaluate, click, newTab, navigate, close };
+  return { send, pages, frames, workers, bindingCalls, errors, extensionId, extensionIds, evaluate, click, newTab, navigate, close };
 }

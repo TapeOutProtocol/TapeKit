@@ -16,6 +16,13 @@
   <label class="hint">网关域名（可选）<input id="gateway" spellcheck="false" placeholder="例如 tape.example.org；留空用扩展内的沙盒查看器"></label>
   <p class="hint" id="mode">—</p>
 </section>
+<section id="wallet">
+  <h2>钱包路由</h2>
+  <p class="hint" id="wallet-state">—</p>
+  <button id="wallet-toggle" type="button" hidden>启用钱包路由</button>
+  <p class="hint error" id="wallet-error" hidden></p>
+  <div id="wallet-sites"></div>
+</section>
 <section>
   <h2>校验当前网页</h2>
   <p class="hint" id="host">—</p>

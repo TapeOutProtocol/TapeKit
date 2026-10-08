@@ -5,6 +5,7 @@
 // origin then belongs to someone else); `container` is kept for display. Every function is pure: inputs are never modified, updates return a new object. The storage backend
 // (hub localStorage, extension snapshot) is someone else's job.
 import { isSupportedChain } from './chains.js';
+import { rpcError, ERR } from './protocol.js';
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const ORIGIN = /^https?:\/\/[^/\s]+$/;
@@ -101,6 +102,18 @@ export function grantInfo(perms, origin) {
   const box = typeof entry.container === 'string' ? entry.container.toLowerCase() : null;
   return { accounts: accountsOf(entry), chainId: entry.chainId, grantedAt: grantedAt(perms, origin), holder: holderOf(entry), container: box };
 }
+
+/** wallet_requestPermissions params: only [{ eth_accounts: {} }] is supported; anything else throws -32602. */
+export function checkPermissionRequest(params) {
+  const p = Array.isArray(params) ? params[0] : null;
+  const ok = !!p && typeof p === 'object' && !Array.isArray(p) && Object.keys(p).length === 1 && Object.prototype.hasOwnProperty.call(p, 'eth_accounts');
+  if (!ok) throw rpcError(ERR.INVALID_PARAMS, 'Only [{ eth_accounts: {} }] can be requested.');
+}
+
+/** EIP-2255 permission list for eth_accounts (wallet_getPermissions, wallet_requestPermissions). */
+export const permissionList = (origin, accounts, date) => (accounts.length
+  ? [{ parentCapability: 'eth_accounts', invoker: origin, caveats: [{ type: 'restrictReturnedAccounts', value: accounts }], date }]
+  : []);
 
 /** Origins that currently hold at least one account (for the "authorized sites" list). */
 export const grantedOrigins = (perms) => Object.keys(base(perms)).filter((o) => isGranted(perms, o));

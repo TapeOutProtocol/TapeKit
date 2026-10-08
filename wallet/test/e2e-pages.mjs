@@ -9,6 +9,10 @@
 //   MARKER               injected next to client.js: shows that injection reached a frame at all
 //   PAGE_HELPER          evaluated in a site page once loaded: records results and events, and adds the
 //                        button the test clicks with real CDP input (the click runs __e2e.next)
+//   writeFakeWalletExtension(dir, hubHost)  fakeWallet + hubProbe packed as a wallet extension (e2e-extension.mjs)
+import fs from 'node:fs';
+import path from 'node:path';
+
 export const BINDING = '__tapekitE2eWallet';
 export const FAKE_ACCOUNT = '0x' + '7e'.repeat(20);
 export const FAKE_SIGNATURE = '0x' + '5a'.repeat(65);
@@ -81,3 +85,20 @@ export const PAGE_HELPER = `(() => {
   document.documentElement.append(b);
   return 'ok';
 })()`;
+
+/**
+ * The fake wallet shipped the way OKX and Binance ship theirs: a MAIN-world content script at document_start on
+ * the hub page. e2e-extension.mjs needs this because Chrome does not hold a window opened by an extension
+ * (chrome.windows.create) for the test's Page.addScriptToEvaluateOnNewDocument, so scripts injected that way
+ * miss the hub's first document (measured 2026-10-08, Chrome 154). Returns `dir`.
+ */
+export function writeFakeWalletExtension(dir, hubHost) {
+  fs.mkdirSync(dir, { recursive: true });
+  const manifest = {
+    manifest_version: 3, name: 'TapeKit e2e fake wallet', version: '1',
+    content_scripts: [{ matches: ['http://localhost/.tape/wallet/*'], js: ['wallet.js'], run_at: 'document_start', world: 'MAIN', all_frames: false }],
+  };
+  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  fs.writeFileSync(path.join(dir, 'wallet.js'), `${fakeWallet(hubHost)}\n${hubProbe(hubHost)}\n`);
+  return dir;
+}

@@ -6,8 +6,12 @@
 // header CSP (scripts and styles from this origin only, frame-ancestors 'none'), no inline code, nothing
 // external, grants in localStorage (never cookies), and it never registers a Service Worker.
 //
-// Channels: today only the popup channel (a site's client script opened this window). The extension channel
-// arrives later; it plugs in the same way: it gets `handle` and is added to `channels` for router events.
+// Channels, both fed into the same router (`handle`) and both listed in `channels` for router events:
+//   - popup channel: a site's client script opened this window (popup-channel.js, design §10.2);
+//   - extension channel: the TapeKit extension's hub-relay.js runs in this page (ext-channel.js, design §10.1).
+//     When the extension opened this window itself (`hello` with managed: true), the hub auto-closes it through
+//     the extension, and it publishes a snapshot of the grants after every change so the extension can answer
+//     eth_chainId / eth_accounts while no hub is open.
 import { createKernel, createIdbCache, createMemoryCache } from '/.tape/kernel/index.js';
 import { createIdentityResolver } from '/.tape/wallet/src/identity.js';
 import { createRouter } from '/.tape/wallet/src/router.js';
@@ -16,6 +20,7 @@ import { ADAPTERS } from '/.tape/wallet/src/adapters/index.js';
 import { createLocalStore, readChoice, writeChoice, PERMS_KEY } from '/.tape/wallet/src/store.js';
 import { createReadRpc } from '/.tape/wallet/src/rpc.js';
 import { createPopupChannel, claimFirstLoad } from '/.tape/wallet/src/popup-channel.js';
+import { createExtChannel } from '/.tape/wallet/src/ext-channel.js';
 import { createIdleCloser } from '/.tape/wallet/src/idle.js';
 import { pickLang, tr, errorText } from '/.tape/wallet/src/i18n.js';
 import { parseSiteOrigin } from '/.tape/wallet/src/origin.js';
@@ -37,7 +42,9 @@ const isPopup = !!window.opener;
 // Only the first load of this popup window may carry the opening click (popup-channel.js): the opener can
 // reload the hub without one.
 const firstLoad = isPopup && claimFirstLoad((() => { try { return window.sessionStorage; } catch { return null; } })());
-const closer = isPopup ? createIdleCloser({ delayMs: CLOSE_AFTER_MS, initialHoldMs: FIRST_REQUEST_MS, close: () => window.close() }) : null;
+// The auto-closer: for a popup now; for a window the extension opened, once the extension says so (startManagedCloser).
+let closer = isPopup ? createIdleCloser({ delayMs: CLOSE_AFTER_MS, initialHoldMs: FIRST_REQUEST_MS, close: () => window.close() }) : null;
+let keepOpen = false;   // install guidance is showing: never auto-close
 const cards = createCards({ doc: document, win: window, lang, hubHost: location.host });
 const panels = createPanels({ doc: document, lang });
 const channels = [];
@@ -51,6 +58,7 @@ document.getElementById('intro').textContent = t('hub.intro');
 function emit(origin, event, data) {
   for (const c of channels) c.emit(origin, event, data);
   if (event === 'accountsChanged') refreshSites();
+  publishSnapshot();
 }
 
 async function busyWhile(work) {
@@ -59,11 +67,13 @@ async function busyWhile(work) {
 }
 
 const routerReady = bootRouter();
+let routerNow = null;   // the router once booted (set before any request handler sees it)
+routerReady.then((r) => { routerNow = r; }, () => {});
 
 function revokeSite(origin) {
   busyWhile(async () => (await routerReady).revokeSite(origin))
     .catch((e) => onError(e, 'revoke'))
-    .finally(refreshSites);
+    .finally(() => { refreshSites(); publishSnapshot(); });
 }
 
 function refreshSites() {
@@ -121,6 +131,7 @@ async function selectWallet(found) {
   const { selected, needsPick } = chooseWallet(found, readChoice(storage));
   if (!found.length) {
     panels.walletNone(ADAPTERS);
+    keepOpen = true;
     if (closer) closer.disable();   // keep the guidance on screen
     return null;
   }
@@ -159,8 +170,8 @@ async function bootRouter() {
         if (closer) closer.hold(NOTICE_MS);
         return cards.notice(info, { onRevoke: revokeSite });
       },
-      confirmSite: (info) => cards.confirmSite(info),
-      confirmSign: (card) => cards.confirmSign(card),
+      confirmSite: (info) => { extChannel.requestFocus(); return cards.confirmSite(info); },
+      confirmSign: (card) => { extChannel.requestFocus(); return cards.confirmSign(card); },
     },
     rpc: createReadRpc({ fetchImpl: (url, init) => fetch(url, init) }),
     emit,
@@ -169,12 +180,14 @@ async function bootRouter() {
   if (selected) {
     watchWallet(selected.provider, router);
     const sync = router.syncWallet().catch((e) => onError(e, 'wallet.sync'));
+    sync.then(publishSnapshot);   // also when it settles after the race below
     await Promise.race([sync, new Promise((r) => setTimeout(r, WALLET_SYNC_MS))]);
   }
   return router;
 }
 
 function requestDone({ origin, error }) {
+  publishSnapshot();
   if (!error) { panels.showStatus(''); return; }
   const site = parseSiteOrigin(origin, hubLocation);
   panels.showStatus(t('status.failed', { site: site ? site.name : origin, reason: errorText(lang, error.code) }));
@@ -195,8 +208,66 @@ const popupChannel = createPopupChannel({
 });
 channels.push(popupChannel);
 
+// ---- extension channel
+
+let closeAsked = false;   // the managed closer has asked the extension to close this window
+let lastExtPending = 0;
+
+// No initial hold: the extension sends its queued requests right behind `hello`, so the notice window closes
+// 5 s after the notice (design §6), not 15 s after opening.
+function managedCloser() {
+  return createIdleCloser({ delayMs: CLOSE_AFTER_MS, close: () => { closeAsked = true; extChannel.requestClose(); } });
+}
+
+/** The extension opened this window: close it through the extension once idle (window.close() may be refused). */
+function startManagedCloser() {
+  if (closer || keepOpen) return;
+  closer = managedCloser();
+  closer.start();
+}
+
+const extChannel = createExtChannel({
+  win: window,
+  hubLocation,
+  handle: async (req) => (await routerReady).handle(req),
+  revoke: async (origin) => {
+    try { return await (await routerReady).revokeSite(origin); } finally { refreshSites(); }
+  },
+  onHello: ({ managed }) => {
+    if (managed) startManagedCloser();
+    publishSnapshot();
+  },
+  onPendingChange: (n) => {
+    // A request crossed the close request (the extension keeps the window when it has more for it): start over.
+    if (n > lastExtPending && closeAsked && !keepOpen) { closeAsked = false; closer = managedCloser(); closer.start(); }
+    if (closer) { if (n > lastExtPending) closer.busy(); else closer.done(); }
+    lastExtPending = n;
+  },
+  onRequestDone: requestDone,
+  beforeReply: publishNow,
+  onError,
+});
+channels.push(extChannel);
+
+/** Send the grants and the wallet's accounts to the extension now (nothing is sent without it). */
+function publishNow() {
+  extChannel.publish({ perms: store.get(), accounts: routerNow ? routerNow.accounts() : [] });
+}
+
+let publishQueued = false;
+/** Same, coalesced: for changes that are not followed by an answer (wallet events, other hub windows). */
+function publishSnapshot() {
+  if (publishQueued) return;
+  publishQueued = true;
+  setTimeout(async () => {
+    publishQueued = false;
+    await routerReady.catch(() => null);
+    publishNow();
+  }, 0);
+}
+
 routerReady.catch((e) => { onError(e, 'boot'); panels.showStatus(errorText(lang, -32603)); });
-window.addEventListener('storage', (e) => { if (e.key === PERMS_KEY || e.key === null) refreshSites(); });
+window.addEventListener('storage', (e) => { if (e.key === PERMS_KEY || e.key === null) { refreshSites(); publishSnapshot(); } });
 refreshSites();
 if (isPopup) {
   popupChannel.sendReady();

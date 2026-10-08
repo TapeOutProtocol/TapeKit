@@ -3,6 +3,7 @@
 // 把当前页面加载过的「会执行的资源」（页面本身、脚本）重新下载，与链上文件逐个比对 SHA-256。
 import { createKernel, sha256Hex, toChecksumAddress } from '../kernel/src/index.js';
 import { getGateway, setGateway, targetUrl } from '../gateway.js';
+import { mountWalletSection } from './wallet.js';
 
 const $ = (id) => document.getElementById(id);
 const kernel = createKernel();
@@ -16,6 +17,8 @@ $('open').addEventListener('submit', async (e) => {
 });
 getGateway().then((g) => { $('gateway').value = g; $('mode').textContent = g ? `经网关 ${g} 打开（真实来源，可存数据、可用钱包）` : '在扩展内的沙盒查看器打开（预览模式，不能存数据、不能用钱包）'; });
 $('gateway').addEventListener('change', async () => { await setGateway($('gateway').value); const g = await getGateway(); $('mode').textContent = g ? `经网关 ${g} 打开（真实来源，可存数据、可用钱包）` : '在扩展内的沙盒查看器打开（预览模式，不能存数据、不能用钱包）'; });
+
+mountWalletSection({ doc: document, chrome, getGateway });
 
 let tab = null;
 chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => {

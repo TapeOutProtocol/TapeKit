@@ -1,7 +1,7 @@
 // Wallet router core (design §5–§7, decisions D-c and D-d). It runs in the hub page; every dependency is
 // injected so it also runs under `node --test`.
 //
-// createRouter(deps) → { handle, walletAccountsChanged, syncWallet, revokeSite }
+// createRouter(deps) → { handle, walletAccountsChanged, syncWallet, accounts, revokeSite }
 //
 // deps
 //   hubLocation  the hub page's own location; a site is an origin one label below its host (origin.js)
@@ -21,7 +21,7 @@
 import { classify, rpcError, isRpcError, paramsSize, LIMITS, ERR } from './protocol.js';
 import { parseSiteOrigin } from './origin.js';
 import { chainForArea, chainParams, isSupportedChain, normalizeChainId } from './chains.js';
-import { grant, revoke, accountsFor, siteChain, setSiteChain, isGranted, grantedOrigins, grantedAt, grantHolder } from './permissions.js';
+import { grant, revoke, accountsFor, siteChain, setSiteChain, isGranted, grantedOrigins, grantedAt, grantHolder, permissionList, checkPermissionRequest } from './permissions.js';
 import { siweMismatch } from './siwe.js';
 import { readSignRequest } from './params.js';
 import { createQueue } from './queue.js';
@@ -33,11 +33,6 @@ const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]
 const homeChain = (site) => chainForArea(site.area);
 const cleanAccounts = (list) => (Array.isArray(list) ? [...new Set(list.filter((a) => typeof a === 'string' && ADDRESS.test(a)).map((a) => a.toLowerCase()))] : []);
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
-
-/** EIP-2255 permission list for eth_accounts. */
-const permissionList = (origin, accounts, date) => (accounts.length
-  ? [{ parentCapability: 'eth_accounts', invoker: origin, caveats: [{ type: 'restrictReturnedAccounts', value: accounts }], date }]
-  : []);
 
 function checkDeps({ hubLocation, store, identity, ui, rpc }) {
   if (!hubLocation) throw new TypeError('router: hubLocation is required');
@@ -152,12 +147,7 @@ export function createRouter(deps = {}) {
   }
 
   async function permission(site, method, params, gesture) {
-    if (method === 'wallet_requestPermissions') {
-      const p = Array.isArray(params) ? params[0] : null;
-      if (!isPlainObject(p) || Object.keys(p).length !== 1 || !Object.prototype.hasOwnProperty.call(p, 'eth_accounts')) {
-        throw rpcError(ERR.INVALID_PARAMS, 'Only [{ eth_accounts: {} }] can be requested.');
-      }
-    }
+    if (method === 'wallet_requestPermissions') checkPermissionRequest(params);
     const id = await requireOk(site);
     await dropStaleGrant(site, id);
     const { accounts: current } = await readWalletAccounts();
@@ -258,6 +248,8 @@ export function createRouter(deps = {}) {
     walletAccountsChanged: async (accounts) => { await setWalletAccounts(accounts); },
     /** Read the wallet's accounts once (e.g. when the hub opens). Does not prompt. */
     syncWallet: async () => (await readWalletAccounts()).accounts,
+    /** The wallet's accounts as last seen by the router (for the extension's snapshot). Never prompts. */
+    accounts: () => [...walletAccounts],
     /** The hub's "revoke" button. Goes through the queue but does not count toward the site's limit. */
     revokeSite: (origin) => {
       const site = parseSiteOrigin(origin, hubLocation);

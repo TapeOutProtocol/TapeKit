@@ -84,7 +84,9 @@ node build-extension.mjs
 2. 打开「开发者模式」；
 3. 点「加载已解压的扩展程序」，选 `dist/extension`。
 
-Chrome 137 以后不能再用启动参数自动加载扩展，所以扩展只能手动装进去试。扩展里的渲染器和网页查看器是同一份代码，查看器已经在无头 Chrome 里测过。
+Chrome 137 以后，品牌版 Chrome 会忽略 `--load-extension` 启动参数；但测试脚本仍能自动加载未打包的扩展：启动时加 `--enable-unsafe-extension-debugging`，再通过 DevTools 协议调用 `Extensions.loadUnpacked`（2026-10-08 在 Chrome 154 上实测可用，`wallet/test/e2e-extension.mjs` 就是这样测钱包路由的）。扩展里的渲染器和网页查看器是同一份代码，查看器已经在无头 Chrome 里测过。
+
+钱包路由（README 第 12 节）：扩展安装时不要任何网站权限。在弹窗里填好网关域名，点「启用钱包路由」，Chrome 会请你允许扩展访问这个网关；允许后，这个网关下每个链上网站的顶层页面都会有 TapeKit 钱包。`node build-extension.mjs --test` 生成的 `dist/extension-test/` 预先带了 `http://*.localhost` 的访问权限，只给端到端测试用，不要拿它分发。
 
 ## 内核 v0.2 新增（2026-09-13）
 

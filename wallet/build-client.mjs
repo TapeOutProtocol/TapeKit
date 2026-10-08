@@ -21,7 +21,7 @@ import { tr } from './src/i18n.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const CLIENT_FILE = path.join(here, 'client.js');
-const SOURCES = ['src/protocol.js', 'src/provider.js', 'client/transport.js', 'client/install.js'].map((f) => path.join(here, f));
+const SOURCES = ['src/protocol.js', 'src/provider.js', 'client/transport.js', 'client/install.js'];
 
 const IMPORT_LINE = /^import\s*\{[^}]*\}\s*from\s*'(\.{1,2}\/[^']+)';\s*$/;
 const DECLARATION = /^(?:export\s+)?(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/;
@@ -64,11 +64,18 @@ function strip(file, bundled) {
   return out;
 }
 
-/** The client source text. Throws when a source uses module syntax the bundle cannot express. */
-export function buildClient() {
-  const bundled = new Set(SOURCES);
+/**
+ * Concatenate ES module sources (paths relative to wallet/, in dependency order) into one classic script: one
+ * function scope, imports between them dropped, `export` removed. Also used for the extension's content
+ * scripts (wallet/extension/bundle.mjs). Throws on module syntax the bundle cannot express or on a top-level
+ * name declared twice.
+ * @param {{ sources: string[], header: string, prelude?: string[], start: string[], filename: string }} opts
+ */
+export function bundleScript({ sources, header, prelude = [], start, filename }) {
+  const files = sources.map((f) => path.join(here, f));
+  const bundled = new Set(files);
   const seen = new Map();
-  const parts = SOURCES.map((file) => {
+  const parts = files.map((file) => {
     const lines = strip(file, bundled);
     for (const line of lines) {
       const m = DECLARATION.exec(line);
@@ -78,19 +85,20 @@ export function buildClient() {
     }
     return `// ---- ${path.relative(here, file)}\n${lines.join('\n')}`;
   });
-  const code = [
-    HEADER,
-    '(() => {',
-    "'use strict';",
-    `const CONFIG = ${JSON.stringify(clientConfig(), null, 2)};`,
-    ...parts,
-    '// ---- start',
-    'installClient(window, CONFIG);',
-    '})();',
-    '',
-  ].join('\n');
-  new vm.Script(code, { filename: 'client.js' });   // syntax check, including duplicate let/const/class
+  const code = [header, '(() => {', "'use strict';", ...prelude, ...parts, '// ---- start', ...start, '})();', ''].join('\n');
+  new vm.Script(code, { filename });   // syntax check, including duplicate let/const/class
   return code;
+}
+
+/** The client source text. Throws when a source uses module syntax the bundle cannot express. */
+export function buildClient() {
+  return bundleScript({
+    sources: SOURCES,
+    header: HEADER,
+    prelude: [`const CONFIG = ${JSON.stringify(clientConfig(), null, 2)};`],
+    start: ['installClient(window, CONFIG);'],
+    filename: 'client.js',
+  });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
