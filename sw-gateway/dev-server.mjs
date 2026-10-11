@@ -1,5 +1,5 @@
 // 网关的本机开发服务器（127.0.0.1:8096）。行为与正式部署的静态服务器一样：
-//   /sw.js、/.tape/boot.js、/.tape/pages.js、/.tape/config.json、/.tape/blocklist.txt → 本目录；/.tape/kernel/* → ../kernel/src；
+//   /sw.js、/.tape/boot.js、/.tape/pages.js、/.tape/serve.js、/.tape/config.json、/.tape/blocklist.txt → 本目录；/.tape/kernel/* → ../kernel/src；
 //   其它任何路径、任何子域名 → index.html（引导页）。
 // Chrome 把 *.localhost 都解析到本机，所以 http://4246-0.localhost:8096/ 就能测端到端。
 import http from 'node:http';
@@ -11,7 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const kernelDir = path.resolve(here, '../kernel/src');
 const port = Number(process.env.PORT || 8096);
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.txt': 'text/plain; charset=utf-8' };
-const STATIC = { '/sw.js': 'sw.js', '/.tape/boot.js': 'boot.js', '/.tape/pages.js': 'pages.js', '/.tape/config.json': 'config.json', '/.tape/policy.html': 'policy.html', '/.tape/blocklist.txt': 'blocklist.txt' };
+const STATIC = { '/sw.js': 'sw.js', '/.tape/boot.js': 'boot.js', '/.tape/pages.js': 'pages.js', '/.tape/serve.js': 'serve.js', '/.tape/config.json': 'config.json', '/.tape/policy.html': 'policy.html', '/.tape/blocklist.txt': 'blocklist.txt' };
 
 export function mapPath(p) {
   if (STATIC[p]) return path.join(here, STATIC[p]);

@@ -2,6 +2,7 @@
 //   网站子域名（4246-0.网关域名）：注册 /sw.js，等它接管，然后刷新——之后就再也不需要服务器了；
 //   网关根域名：首页，输入链上名字跳到子域名；可把 web+tape:// 链接注册给这个网关处理。
 import { parseHostLabel, parseInput, formatName, formatHostLabel } from '/.tape/kernel/name.js';
+import { OPEN_SUFFIX } from '/.tape/serve.js';
 const zh = /^zh/i.test(navigator.language || '');
 const t = (z, e) => (zh ? z : e);
 const $ = (id) => document.getElementById(id);
@@ -20,11 +21,20 @@ function badHost() {
   $('main').innerHTML = `<h1>${t('主机名写法不对', 'Invalid host name')}</h1><p>${t('网站子域名要写成「#ID-处理器编号」（其他链是「#ID-区号-处理器编号」，X Layer 区号 2、Base 区号 3），都是不带前导 0 的十进制数，例如', 'The site subdomain must be "#ID-processor" (on other chains "#ID-area-processor"; X Layer is area 2, Base is area 3), all decimal without leading zeros, e.g.')} <span class="mono">4246-0.${esc(root)}</span>、<span class="mono">1-2-344.${esc(root)}</span></p>`;
 }
 
+// 装不上 Service Worker（App 内置浏览器、隐私模式）：换到同名加后缀的子域名，那一档由网关在服务器上
+// 读链。路径、查询串、片段原样带过去，用 replace 不留历史记录（返回键要回到上一个页面，不是回到这里）。
+// 那一档不加载这个脚本，所以不会来回跳。
+function toOpen() {
+  const parts = location.hostname.split('.');
+  parts[0] += OPEN_SUFFIX;
+  location.replace(`${location.protocol}//${parts.join('.')}${location.port ? ':' + location.port : ''}${location.pathname}${location.search}${location.hash}`);
+}
+
 async function siteBoot(name) {
   document.title = name;
   const say = (s, cls) => { $('msg').textContent = s; $('msg').className = cls || ''; };
   say(t(`正在准备 ${name}…`, `Preparing ${name}…`));
-  if (!('serviceWorker' in navigator)) return fail(t('这个浏览器不支持 Service Worker，打不开链上网站。请用最近两年的 Chrome、Edge、Firefox 或 Safari。', 'This browser has no Service Worker support. Use a recent Chrome, Edge, Firefox or Safari.'));
+  if (!('serviceWorker' in navigator)) return toOpen();
   if (!window.isSecureContext) return fail(t('需要 https（或 localhost）才能装 Service Worker。', 'Service Workers need https (or localhost).'));
   try {
     const reg = await navigator.serviceWorker.register('/sw.js', { type: 'module', scope: '/', updateViaCache: 'none' });
@@ -37,7 +47,8 @@ async function siteBoot(name) {
     });
     location.reload();
   } catch (e) {
-    fail(t('装不上 Service Worker：', 'Could not install the Service Worker: ') + (e && e.message || e));
+    if (e && e.message === 'timeout') fail(t('装上了 Service Worker，但它没有接管这个页面。', 'The Service Worker installed but did not take over this page.'));
+    else toOpen();
   }
   function fail(s) {
     $('main').innerHTML = `<h1>${esc(name)}</h1><p class="err">${esc(s)}</p><p class="hint">${t('如果你刚按了「强制刷新」（Shift+刷新），浏览器会绕过 Service Worker 一次，再普通刷新一下就好。', 'If you just did a hard reload (Shift+Reload), the browser bypassed the Service Worker once; a normal reload will fix it.')}</p>`;

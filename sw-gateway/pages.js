@@ -38,6 +38,9 @@ const T = {
   rpcFail1: { zh: '需要至少 {q} 家运营方给出相同结果。刚才的错误：{err}', en: 'At least {q} independent operators must agree. Last error: {err}' },
   blockedReq: { zh: '这个请求指向链外，已被 tape 网关拦截。网关上的链上网站不能访问链外资源。', en: 'This request goes off-chain and was blocked by the tape gateway. On-chain sites on the gateway cannot reach off-chain resources.' },
   devBanner: { zh: '开发预览：这个名字还没开通，只有打开了开发预览的浏览器能看到', en: 'Dev preview: this name is not activated; only browsers with dev preview enabled can see it' },
+  serverRead: { zh: '这些文件是网关在服务器上读的', en: 'These files were read by the gateway, on its server' },
+  serverRead1: { zh: '你的浏览器装不上 Service Worker（App 内置浏览器、隐私模式常常不支持），所以这个地址由网关在服务器上从链上读出文件、核对哈希，再发给你。核对发生在网关，不在你的浏览器里：你需要信任这个网关。', en: 'Your browser cannot install a Service Worker (in-app browsers and private modes often cannot), so on this address the gateway reads the files from the chain on its server, checks their hashes, and sends them to you. The check happens on the gateway, not in your browser: you have to trust this gateway.' },
+  serverRead2: { zh: '想让浏览器自己读链、自己核对，用最近两年的 Chrome、Edge、Firefox 或 Safari 打开 {verifyHost}。', en: 'To have your own browser read the chain and check the hashes itself, open {verifyHost} in a recent Chrome, Edge, Firefox or Safari.' },
   statusLink: { zh: '这个网站的状态页：', en: 'Status page for this site:' },
   notice: { zh: '链上数据是公开的；网关只显示已开通的名字。「已与链上核对」只说明字节与链上一致，不说明网站可信。WebSocket 和跨来源框架不经过网关，看不到也记不到，所以「本次未发现链外访问」不等于「一定没有」。', en: 'On-chain data is public; the gateway only displays activated names. "Verified" means the bytes match the chain, not that the site is trustworthy. WebSocket connections and cross-origin frames do not pass through the gateway, so "no off-chain access seen" does not mean there was none.' },
 };
@@ -133,6 +136,7 @@ export function messagePage({ locale, kind, res, host, vars = {}, statusTextOf }
     case 'not-found': title = t('notFound'); html = `<p><a href="/">${t('back')}</a></p>`; break; // 路径任何人都能构造，不回显，免得在知名网站名下显示攻击者的文字
     case 'too-large': title = t('tooLarge'); html = `<p class="mono">${esc(vars.path || '')}</p>`; break;
     case 'not-verified': title = t('notVerified'); html = `<p class="mono">${esc(vars.path || '')}</p>`; break;
+    case 'server-read': title = t('serverRead'); html = `<p>${t('serverRead1')}</p><p class="hint">${t('serverRead2', { verifyHost: `<span class="mono">${esc(vars.verifyHost || '')}</span>` })}</p>`; break;
     case 'bad-host': title = t('badHost'); html = `<p>${t('badHost1', { host: esc(vars.root || host) })}</p>`; break;
     case 'rpc': title = t('rpcFail'); html = `<p>${t('rpcFail1', { q: vars.quorum, err: esc(vars.err || '') })}</p>`; break;
     case 'blocked-request': title = t('blockedReq'); break;

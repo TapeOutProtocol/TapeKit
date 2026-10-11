@@ -10,9 +10,9 @@
 
 import { createKernel, createIdbCache, createMemoryCache, InputError, RpcError, scanHtml, scanCss, setLocale, statusText, BSC_MAINNET, formatName, parseHostLabel, networkByArea, networkByChainId, siteNodes } from './.tape/kernel/index.js';
 import { statusPage, messagePage, pickLocale, tr } from './.tape/pages.js';
+import { SITE_CSP, LOCKED_CSP, GATEWAY_PATHS as NETWORK_PATHS, OPEN_SUFFIX, docPage as html, withCharset, isHtml, isCss, fileResponse } from './.tape/serve.js';
 
 const VERSION = '0.3.0';   // 0.3.0：链外访问放行并记录，脚本只能来自链上；0.2.0：三链（区号）、网站 CSP、去掉可被网站改写的节点设置
-const NETWORK_PATHS = /^\/(sw\.js$|\.tape\/(kernel\/|boot\.js$|pages\.js$|policy\.html$|blocklist\.txt$|config\.json$))/;   // 这些从服务器取，其余都走链
 const SETTINGS_KEY = 'gw-settings:v1';
 const MAX_LOG = 200;
 
@@ -70,42 +70,18 @@ const push = (arr, item, key = 'url') => { if (arr.length < MAX_LOG && !arr.some
 // 子域名第一段：#ID-处理器编号（BNB），或 #ID-区号-处理器编号（X Layer = 2、Base = 3）
 const labelOf = (hostname) => {
   if (hostname.endsWith('.')) return null;   // 4246-0.tapekit.org. 和不带点的是两个来源：拒绝
-  const p = parseHostLabel(hostname.split('.')[0]);
+  const first = hostname.split('.')[0];
+  // 兼容档的来源（4246-0-open）上也认：站点自己 register('/sw.js') 时装上的是网关这个
+  // Service Worker（那条路径两档都归网关），不认后缀就会把这个站的每条路径都判成主机名写法不对
+  const p = parseHostLabel(first.endsWith(OPEN_SUFFIX) ? first.slice(0, -OPEN_SUFFIX.length) : first);
   return p ? { name: formatName(p.tokenId, p.cpu, 'tape', p.area), area: p.area, rootHost: hostname.split('.').slice(1).join('.') } : null;
 };
 /** 链上网站可以直接访问的节点：只有它所在那条链的、不读调用方密钥的节点（所在链由主机名里的区号决定，不依赖内存状态） */
 const siteNodeSet = (label) => { const net = label && networkByArea(label.area); return new Set((net ? siteNodes(net) : []).map((u) => new URL(u).href)); };
-/**
- * 网站文件的内容安全策略。链外的数据可以访问：接口、图片、字体、样式、视频流、WebSocket、嵌入的播放器和
- * 钱包连接（WalletConnect 要连它的中继和验证页）——这些是网站能做起来的前提。
- * 但网站的代码只能来自链上：script-src 不放任何链外地址，Worker 只能是同源或 blob。
- * 子框架（沙盒、srcdoc、blob、data）继承这条策略，同样拉不到链外脚本。链外访问记在状态页，
- * 有链外访问的网站不显示「100% 链上」。
- */
-const siteCsp = () => [
-  "default-src 'self' blob: data:",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
-  "style-src 'self' 'unsafe-inline' blob: data: https:",
-  "img-src 'self' blob: data: https:", "font-src 'self' blob: data: https:", "media-src 'self' blob: data: https:",
-  "connect-src 'self' blob: data: https: wss:",
-  "frame-src 'self' https:", "worker-src 'self' blob:", "object-src 'none'", "base-uri 'self'", "form-action 'self' https:",
-  // 只允许同源把自己嵌进框架：否则任何网页都能把链上网站整页框住做点击劫持（连钱包的站尤其要紧）
-  "frame-ancestors 'self'",
-  'report-uri /.tape/csp-report',
-].join('; ');
 // 网站所在链的节点（状态页只列这条链的）；还没解析出来时用汇总
 /** 节点统计：只给主机名（不含路径、查询串），不给完整网址 */
 const nodeSummary = (rpc) => Object.fromEntries(Object.entries(rpc.stats()).map(([u, s]) => [new URL(u).host, { ok: s.ok, fail: s.fail, rateLimited: s.rateLimited, lastMs: s.lastMs, cooldownUntil: s.cooldownUntil }]));
 const chainRpc = (res) => (res && res.chainId && kernel.kernelFor && kernel.kernelFor(res.chainId)?.rpc) || kernel.rpc;
-const withCharset = (ct) => (/^(text\/|application\/(javascript|json|xml))/i.test(ct) && !/charset=/i.test(ct) ? ct + '; charset=utf-8' : ct);
-const isHtml = (f) => /html/i.test(f.contentType) || /\.html?$/i.test(f.path);
-const isCss = (f) => /css/i.test(f.contentType) || /\.css$/i.test(f.path);
-// 网关自己生成的页面（状态页、提示页、错误页）也必须带 CSP：否则网站可以把它们嵌进框架当跳板，
-// 在里面再开子框架绕过网站的 CSP（审计第三轮）。这些页面没有脚本，只需要内联样式和同源表单
-const DOC_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-src 'none'; base-uri 'none'; frame-ancestors 'none'";
-// 数据类响应（状态 JSON、转给服务器的静态文件被当成文档打开时）：什么都不许
-const LOCKED_CSP = "default-src 'none'; sandbox";
-const html = (body, status = 200, headers = {}) => new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': DOC_CSP, ...headers } });
 const DOCUMENT_DEST = new Set(['document', 'iframe', 'frame', 'embed', 'object']);
 /** 转给服务器的文件：被当成文档打开（嵌进框架、新窗口）时加上 LOCKED_CSP */
 async function passThrough(req) {
@@ -193,11 +169,7 @@ async function own(e, url) {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(file.bytes);
     for (const x of (isHtml(file) ? scanHtml(text) : scanCss(text))) push(h.external, { ...x, path: file.path });
   }
-  return new Response(file.bytes, { status: 200, headers: {
-    'content-type': withCharset(file.contentType), 'content-length': String(file.bytes.length), 'cache-control': 'no-cache',
-    'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'x-tape-sha256': file.sha256, 'x-tape-verified': file.verified ? '1' : '0', ...idHeaders,
-    'content-security-policy': siteCsp(),
-  } });
+  return fileResponse(file, idHeaders, 'client');
 }
 
 /** 链外请求：浏览器照常发出，这里只记进这个网站的"链外访问"列表（状态页显示）。节点地址不记 */
