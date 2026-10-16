@@ -5,8 +5,8 @@
 // cannot read or write extension local storage at all (the background restricts it to trusted contexts).
 //
 // With it the background answers eth_chainId, net_version, eth_accounts and wallet_getPermissions, and the
-// connect requests of an already-connected site, without opening a window; it picks how to open the hub
-// (focused or not), and the popup lists the authorized sites.
+// connect requests of an already-connected site, without opening anything; it picks where to open the hub (a
+// tab, or the small unfocused notice window), and the popup lists the authorized sites.
 // Answers use the same functions as the router (permissions.js), so they match what the hub would say.
 // Known limit (design §5.5): while no hub is open, the accounts can lag behind the wallet; the hub re-reads the
 // wallet before every signature.
@@ -87,15 +87,20 @@ export function connectedAnswer(snapshot, site, method, params) {
 }
 
 /**
- * Should the hub window take focus for this request? Only when the user has something to do there:
- *   - signing (the TapeKit card, D-d);
+ * Does this request need the hub in a tab (the active tab of a normal window) rather than the small notice
+ * window? OKX Wallet refuses connect, sign and chain-switch calls from a popup-type window without a prompt
+ * (research/manual-test.md), so a tab is needed whenever the hub may call the wallet's user-facing methods, and
+ * whenever the user has something to do in the hub:
+ *   - signing (the TapeKit card, D-d; then the chain switch and the signature in the wallet);
  *   - a connect while the hub has no wallet account yet (the one-time wallet connection, R1);
- *   - a connect without a user gesture from a site that is not connected (the site dialog, D-c).
- * A connect with a gesture only shows the no-click notice, so the window opens without focus. Chain switches,
- * revokes and already-connected sites show nothing. The hub also asks for focus whenever it shows a card,
- * so a wrong guess here costs a focus change, never a hidden dialog.
+ *   - a connect without a user gesture from a site that is not connected (the site dialog, D-c, which may lead
+ *     to the wallet connection).
+ * A connect with a gesture while the wallet account is known only shows the no-click notice: the notice
+ * window, without focus. Chain switches and revokes only change TapeKit's own records (the wallet is switched
+ * at signing time) and show nothing. When the snapshot is wrong (the wallet dropped the hub since), the hub
+ * refuses the wallet call in the notice window (router canPrompt, 'needs-tab') and the request moves to a tab.
  */
-export function needsFocus(method, gesture, snapshot, origin) {
+export function needsTab(method, gesture, snapshot, origin) {
   const kind = classify(method);
   if (kind === 'sign') return true;
   if (kind !== 'permission') return false;

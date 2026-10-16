@@ -7,11 +7,17 @@
 // external, grants in localStorage (never cookies), and it never registers a Service Worker.
 //
 // Channels, both fed into the same router (`handle`) and both listed in `channels` for router events:
-//   - popup channel: a site's client script opened this window (popup-channel.js, design §10.2);
+//   - popup channel: a site's client script opened this page in a new tab (popup-channel.js, design §10.2);
 //   - extension channel: the TapeKit extension's hub-relay.js runs in this page (ext-channel.js, design §10.1).
-//     When the extension opened this window itself (`hello` with managed: true), the hub auto-closes it through
-//     the extension, and it publishes a snapshot of the grants after every change so the extension can answer
-//     eth_chainId / eth_accounts while no hub is open.
+//     When the extension opened this tab or window itself (`hello` with managed: true), the hub auto-closes it
+//     through the extension, and it publishes a snapshot of the grants after every change so the extension can
+//     answer eth_chainId / eth_accounts while no hub is open.
+//
+// The wallet's user-facing calls (connect, chain switch, signature) are made only from a tab: OKX Wallet refuses
+// them from a popup-type window without showing anything (research/manual-test.md). The extension opens such
+// work in a tab and says in `hello` when it opened a popup window (the no-click notice); there the router's
+// canPrompt() is false and those requests fail 4900 'needs-tab', which the extension moves to a tab (design §10,
+// 2026-10-16). The client script always opens a tab.
 import { createKernel, createIdbCache, createMemoryCache } from '/.tape/kernel/index.js';
 import { createIdentityResolver } from '/.tape/wallet/src/identity.js';
 import { createRouter } from '/.tape/wallet/src/router.js';
@@ -23,12 +29,13 @@ import { createPopupChannel, claimFirstLoad } from '/.tape/wallet/src/popup-chan
 import { createExtChannel } from '/.tape/wallet/src/ext-channel.js';
 import { createIdleCloser } from '/.tape/wallet/src/idle.js';
 import { pickLang, tr, errorText } from '/.tape/wallet/src/i18n.js';
+import { REASON_NEEDS_TAB } from '/.tape/wallet/src/protocol.js';
 import { parseSiteOrigin } from '/.tape/wallet/src/origin.js';
 import { grantedOrigins, grantInfo } from '/.tape/wallet/src/permissions.js';
 import { createCards, NOTICE_MS } from './cards.js';
 import { createPanels } from './panels.js';
 
-const CLOSE_AFTER_MS = 3000;        // popup closes this long after the last request (design §10.1)
+const CLOSE_AFTER_MS = 3000;        // the hub closes this long after the last request (design §10.1)
 const FIRST_REQUEST_MS = 15_000;    // ...or this long after opening if no request ever arrives
 const WALLET_SYNC_MS = 2000;        // do not let a slow wallet hold up the first request
 
@@ -38,12 +45,13 @@ const hubLocation = location.href;
 const onError = (e, where) => console.error('[tapekit-wallet]', where, e);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const store = createLocalStore({ storage, key: PERMS_KEY, onError });
-const isPopup = !!window.opener;
-// Only the first load of this popup window may carry the opening click (popup-channel.js): the opener can
-// reload the hub without one.
-const firstLoad = isPopup && claimFirstLoad((() => { try { return window.sessionStorage; } catch { return null; } })());
-// The auto-closer: for a popup now; for a window the extension opened, once the extension says so (startManagedCloser).
-let closer = isPopup ? createIdleCloser({ delayMs: CLOSE_AFTER_MS, initialHoldMs: FIRST_REQUEST_MS, close: () => window.close() }) : null;
+const openedBySite = !!window.opener;   // a site's client script opened this tab (window.open keeps the opener)
+// Only the first load of this tab may carry the opening click (popup-channel.js): the opener can reload the hub
+// without one.
+const firstLoad = openedBySite && claimFirstLoad((() => { try { return window.sessionStorage; } catch { return null; } })());
+// The auto-closer: for a tab a site opened now (window.close(); Chrome then shows the site's tab again); for a
+// tab or window the extension opened, once the extension says so (startManagedCloser).
+let closer = openedBySite ? createIdleCloser({ delayMs: CLOSE_AFTER_MS, initialHoldMs: FIRST_REQUEST_MS, close: () => window.close() }) : null;
 let keepOpen = false;   // install guidance is showing: never auto-close
 const cards = createCards({ doc: document, win: window, lang, hubHost: location.host });
 const panels = createPanels({ doc: document, lang });
@@ -135,7 +143,7 @@ async function selectWallet(found) {
     if (closer) closer.disable();   // keep the guidance on screen
     return null;
   }
-  const canChange = found.length > 1 && !isPopup;   // reloading a popup would drop the site's requests
+  const canChange = found.length > 1 && !openedBySite;   // reloading would drop the site's requests
   if (!needsPick) {
     panels.walletUsing(selected.adapter.label, canChange ? changeWallet : null);
     return selected;
@@ -176,6 +184,7 @@ async function bootRouter() {
     rpc: createReadRpc({ fetchImpl: (url, init) => fetch(url, init) }),
     emit,
     onError,
+    canPrompt: () => !extChannel.inPopupWindow(),
   });
   if (selected) {
     watchWallet(selected.provider, router);
@@ -190,7 +199,13 @@ function requestDone({ origin, error }) {
   publishSnapshot();
   if (!error) { panels.showStatus(''); return; }
   const site = parseSiteOrigin(origin, hubLocation);
-  panels.showStatus(t('status.failed', { site: site ? site.name : origin, reason: errorText(lang, error.code) }));
+  const name = site ? site.name : origin;
+  if (error.data && error.data.reason === REASON_NEEDS_TAB) {
+    // The extension moves the request to a hub tab; a site's script cannot, so it gets the error.
+    panels.showStatus(extChannel.inPopupWindow() ? t('status.moved', { site: name }) : t('status.failed', { site: name, reason: errorText(lang, 'tab') }));
+    return;
+  }
+  panels.showStatus(t('status.failed', { site: name, reason: errorText(lang, error.code) }));
 }
 
 let lastPending = 0;
@@ -269,7 +284,7 @@ function publishSnapshot() {
 routerReady.catch((e) => { onError(e, 'boot'); panels.showStatus(errorText(lang, -32603)); });
 window.addEventListener('storage', (e) => { if (e.key === PERMS_KEY || e.key === null) { refreshSites(); publishSnapshot(); } });
 refreshSites();
-if (isPopup) {
+if (openedBySite) {
   popupChannel.sendReady();
   closer.start();
 }

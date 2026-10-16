@@ -27,16 +27,16 @@ const CONFIG = {
   },
   "messages": {
     "popup": {
-      "zh": "浏览器拦住了 TapeKit 窗口。请点网站上的按钮再试。",
-      "en": "The browser blocked the TapeKit window. Click the button on the site and try again."
+      "zh": "浏览器拦住了 TapeKit 页面。请点网站上的按钮再试。",
+      "en": "The browser blocked the TapeKit page. Click the button on the site and try again."
     },
     "closed": {
-      "zh": "TapeKit 窗口被关掉了，请求已取消。",
-      "en": "The TapeKit window was closed; the request was cancelled."
+      "zh": "TapeKit 页面被关掉了，请求已取消。",
+      "en": "The TapeKit page was closed; the request was cancelled."
     },
     "load": {
-      "zh": "TapeKit 窗口没有响应，已关闭。请检查网络，再点网站上的按钮重试。",
-      "en": "The TapeKit window did not respond and was closed. Check your connection, then click the button on the site again."
+      "zh": "TapeKit 页面没有响应，已关闭。请检查网络，再点网站上的按钮重试。",
+      "en": "The TapeKit page did not respond and was closed. Check your connection, then click the button on the site again."
     }
   }
 };
@@ -64,6 +64,7 @@ const DEFAULT_MESSAGES = Object.freeze({
   '-32603': 'Internal error.',
   '-32005': 'Too many pending requests from this site.',
 });
+const REASON_NEEDS_TAB = 'needs-tab';
 const LIMITS = Object.freeze({
   maxParamsBytes: 256 * 1024,
   maxQueuedPerSite: 4,
@@ -209,8 +210,7 @@ function announceProvider(win, provider, info = createProviderInfo()) {
   return () => win.removeEventListener('eip6963:requestProvider', announce);
 }
 // ---- client/transport.js
-const POPUP_NAME = 'tapekit-wallet';
-const POPUP_FEATURES = 'popup,width=400,height=640';
+const HUB_NAME = 'tapekit-wallet';   // window.open target name; no features string, so a tab
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const CHAIN_HEX = /^0x[0-9a-f]{1,14}$/;
 const SYNC = 'sync';   // marks the transport's own reads after `ready`; their answers never reach the site
@@ -232,8 +232,8 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
   const lang = /^zh\b/i.test(String((win.navigator && win.navigator.language) || '')) ? 'zh' : 'en';
   const doFetch = fetchImpl || ((url, init) => win.fetch(url, init));
   const failure = (code, key) => rpcError(code, messages[key][lang], { reason: key, messages: { zh: messages[key].zh, en: messages[key].en } });
-  let popup = null;           // the hub window this page opened
-  let ready = false;          // the hub in `popup` has said `ready`
+  let hub = null;             // the hub tab this page opened
+  let ready = false;          // the hub in `hub` has said `ready`
   let outbox = [];            // requests waiting for `ready`, oldest first
   let pending = new Map();    // id → { method, resolve, reject }  (replaced on change, never edited)
   let seq = 0;
@@ -295,7 +295,7 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
   }
   function post(msg) {
     try {
-      popup.postMessage(msg, hubOrigin);
+      hub.postMessage(msg, hubOrigin);
     } catch {
       settle(msg.id, (p) => p.reject(rpcError(ERR.INVALID_PARAMS, 'The request could not be sent to TapeKit.')));
     }
@@ -320,30 +320,35 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
     if (poll !== null) clearInterval(poll);
     poll = null;
     stopReadyTimer();
-    popup = null;
+    hub = null;
     ready = false;
     failAll(code, key);
   }
   function onReadyTimeout() {
     readyTimer = null;
-    if (!popup || ready) return;
-    const w = popup;
+    if (!hub || ready) return;
+    const w = hub;
     endSession(ERR.DISCONNECTED, 'load');
     try { w.close(); } catch { /* the user can still close it */ }
   }
-  function openHub() {
-    if (popup && !popup.closed) return true;
-    if (popup) endSession();
+  function openHub(kind) {
+    if (hub && !hub.closed) {
+      if (kind === 'sign' || kind === 'permission') {
+        try { hub.focus(); } catch { /* the hub still answers; the user can switch to its tab */ }
+      }
+      return true;
+    }
+    if (hub) endSession();
     let w = null;
     try {
-      w = win.open(hubUrl + '#origin=' + encodeURIComponent(win.location.origin), POPUP_NAME, POPUP_FEATURES);
+      w = win.open(hubUrl + '#origin=' + encodeURIComponent(win.location.origin), HUB_NAME);
     } catch {
       w = null;
     }
     if (!w) return false;
-    popup = w;
+    hub = w;
     ready = false;
-    poll = setInterval(() => { if (popup && popup.closed) endSession(); }, pollMs);
+    poll = setInterval(() => { if (hub && hub.closed) endSession(); }, pollMs);
     readyTimer = setTimeout(onReadyTimeout, readyTimeoutMs);
     return true;
   }
@@ -383,21 +388,21 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
     else if (msg.event === 'chainChanged') setChain(msg.data);
   }
   function onMessage(event) {
-    if (!popup || !event || event.source !== popup || event.origin !== hubOrigin) return;
+    if (!hub || !event || event.source !== hub || event.origin !== hubOrigin) return;
     const msg = readEnvelope(event.data);
     if (!msg) return;
     if (msg.type === 'ready') onReady();
     else if (msg.type === 'response') onResponse(msg);
     else if (msg.type === 'event') onEvent(msg);
   }
-  function viaHub(method, params) {
+  function viaHub(kind, method, params) {
     if (paramsSize(params) > LIMITS.maxParamsBytes) return Promise.reject(rpcError(ERR.INVALID_PARAMS, 'Request parameters are larger than 256 KB.'));
     try {
       if (typeof structuredClone === 'function') structuredClone(params);   // fail now, not after the click is used up
     } catch {
       return Promise.reject(rpcError(ERR.INVALID_PARAMS, 'params must be plain data.'));
     }
-    if (!openHub()) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
+    if (!openHub(kind)) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
     const id = ++seq;
     const msg = makeRequest(id, method, params);
     return new Promise((resolve, reject) => {
@@ -413,7 +418,7 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
       if (kind === 'local') return Promise.resolve(local(method));
       if (kind === 'read') return read(method, params);
       if (kind === 'reject') return Promise.reject(rpcError(ERR.UNSUPPORTED_METHOD, `TapeKit does not support ${String(method).slice(0, 100)}.`));
-      return viaHub(method, params);
+      return viaHub(kind, method, params);
     },
     subscribe(fn) { listener = typeof fn === 'function' ? fn : () => {}; },
   });

@@ -1,8 +1,9 @@
 // Offline unit tests for wallet/extension/background.js and hub-link.js (design §10.1): who counts as a site,
-// local answers, reads, opening the hub (focused or not), events, snapshots and the popup's revoke.
+// local answers, reads, opening the hub (a tab next to the site, or the notice window), events, snapshots and
+// the popup's revoke. Hub tabs: research/manual-test.md (OKX refuses wallet calls from popup windows).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setup, site, hub, lastWindow, flush, A, B, X, HUB_URL, EXT_ID } from './ext-harness.mjs';
+import { setup, site, hub, lastOpened, flush, A, B, X, HUB_URL, EXT_ID } from './ext-harness.mjs';
 import { SNAPSHOT_KEY } from '../extension/snapshot.js';
 import { HUB_KEY } from '../extension/hub-link.js';
 import { REVOKE_MESSAGE, EVENT_MESSAGE } from '../src/ext-protocol.js';
@@ -90,37 +91,22 @@ test('unknown methods 4200, oversized params -32602, reads go to a public node o
   assert.equal(chrome.log.created.length, 0);
 });
 
-test('a connect with a gesture, wallet already connected: unfocused hub window, sent once the hub is ready', async () => {
+test('a connect with a gesture, wallet already connected: the notice window without focus, sent once the hub is ready', async () => {
   const { chrome } = setup({ snapshot: { perms: {}, accounts: [X] } });
   const a = site(chrome);
   a.ask('c1', 'eth_requestAccounts', [], true);
   await flush();
-  assert.equal(chrome.log.created.length, 1);
+  assert.equal(chrome.log.opened.length, 1);
   assert.deepEqual(chrome.log.created[0], { type: 'popup', width: 400, height: 640, url: HUB_URL, focused: false });
-  const h = hub(chrome, { windowId: lastWindow(chrome) });
+  const h = hub(chrome, lastOpened(chrome));
   await flush();
-  assert.deepEqual(h.got[0], { type: 'hello', managed: true });
+  assert.deepEqual(h.got[0], { type: 'hello', managed: true, popup: true });   // the hub makes no wallet prompt there
   const [req] = h.requests();
   assert.deepEqual({ ...req, id: undefined }, { type: 'request', id: undefined, origin: A, method: 'eth_requestAccounts', params: [], gesture: true });
   h.answer(req.id, [X]);
   await flush();
   assert.deepEqual(a.reply('c1').result, [X]);
   assert.deepEqual((await chrome.storage.session.get('tapekit-wallet:pending:v1'))['tapekit-wallet:pending:v1'], {});
-});
-
-test('focus: no gesture, first wallet connection and signing open focused; chain switches do not', async () => {
-  const cases = [
-    [{ perms: {}, accounts: [X] }, 'eth_requestAccounts', false, true],    // site dialog
-    [null, 'eth_requestAccounts', true, true],                             // one-time wallet connection
-    [granted([A]), 'personal_sign', false, true],                          // the card
-    [granted([A]), 'wallet_switchEthereumChain', false, false],
-  ];
-  for (const [snapshot, method, gesture, focused] of cases) {
-    const { chrome } = setup({ snapshot });
-    site(chrome).ask(1, method, method === 'personal_sign' ? ['0x00', X] : [], gesture);
-    await flush();
-    assert.equal(chrome.log.created[0].focused, focused, method);
-  }
 });
 
 test('a connected site\'s connect is answered from the snapshot: no window, with or without a gesture', async () => {
@@ -144,40 +130,23 @@ test('a connect without a visible grant still goes to the hub: another site, or 
     const s = site(chrome, { origin });
     s.ask(1, 'eth_requestAccounts', [], true);
     await flush();
-    assert.equal(chrome.log.created.length, 1, origin);
+    assert.equal(chrome.log.opened.length, 1, origin);
     assert.equal(s.reply(1), null);
   }
 });
 
-test('a second request reuses the open window; a focus request from the hub focuses it', async () => {
+test('the hub answers only through a host this worker opened; other hub pages give events and snapshots only', async () => {
   const { chrome } = setup({ snapshot: granted([A]) });
   const a = site(chrome);
   a.ask(1, 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
   await flush();
-  const h = hub(chrome, { windowId: lastWindow(chrome) });
+  const tab = hub(chrome, { tabId: 999, windowId: 1 });   // a hub tab the user opened
   await flush();
-  a.ask(2, 'personal_sign', ['0x00', X]);
-  await flush();
-  assert.equal(chrome.log.created.length, 1);
-  assert.deepEqual(chrome.log.updated.at(-1), { id: lastWindow(chrome), focused: true });   // signing needs the user
-  assert.equal(h.requests().length, 2);
-  h.send({ type: 'focus' });
-  await flush();
-  assert.equal(chrome.log.updated.length, 2);
-});
-
-test('the hub answers only through the window this worker opened; other hub pages give events and snapshots only', async () => {
-  const { chrome } = setup({ snapshot: granted([A]) });
-  const a = site(chrome);
-  a.ask(1, 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
-  await flush();
-  const tab = hub(chrome, { windowId: 999 });   // a hub tab the user opened
-  await flush();
-  assert.deepEqual(tab.got, [{ type: 'hello', managed: false }]);
+  assert.deepEqual(tab.got, [{ type: 'hello', managed: false, popup: false }]);
   tab.answer('a-1', null);
   await flush();
   assert.equal(a.reply(1), null);
-  const fake = hub(chrome, { windowId: lastWindow(chrome), origin: A, url: A + '/.tape/wallet/' });   // not the root
+  const fake = hub(chrome, { ...lastOpened(chrome), origin: A, url: A + '/.tape/wallet/' });   // not the root
   await flush();
   assert.deepEqual(fake.got, []);
   tab.send({ type: 'snapshot', perms: {}, accounts: [] });
@@ -191,7 +160,7 @@ test('the snapshot is cleaned: only this gateway\'s sites, valid accounts; never
   s.remote.postMessage({ type: 'snapshot', perms: { [A]: { accounts: [X], chainId: '0x38' } }, accounts: [X] });
   await flush();
   assert.equal((await chrome.storage.local.get(SNAPSHOT_KEY))[SNAPSHOT_KEY], undefined);
-  const h = hub(chrome, { windowId: 5 });
+  const h = hub(chrome, { tabId: 50, windowId: 5 });
   h.send({ type: 'snapshot', accounts: [X, 'nope'], perms: {
     [A]: { accounts: [X.toUpperCase().replace('0X', '0x')], chainId: '0x2105', grantedAt: 9 },
     'https://4246-0.tapekit.org.evil.com': { accounts: [X], chainId: '0x38' },
@@ -211,7 +180,7 @@ test('one hub port is handled in order: a snapshot sent before an answer is stor
   const a = site(chrome);
   a.ask('c1', 'eth_requestAccounts', [], true);
   await flush();
-  const h = hub(chrome, { windowId: lastWindow(chrome) });
+  const h = hub(chrome, lastOpened(chrome));
   await flush();
   const [req] = h.requests();
   const realSet = chrome.storage.local.set;
@@ -233,7 +202,7 @@ test('one hub port is handled in order: a snapshot sent before an answer is stor
 test('router events go only to the tabs of that origin', async () => {
   const { chrome } = setup();
   chrome.tabs.list = [{ id: 1, url: A + '/page' }, { id: 2, url: B + '/' }, { id: 3, url: A + '.evil.com/' }];
-  const h = hub(chrome, { windowId: 5 });
+  const h = hub(chrome, { tabId: 50, windowId: 5 });
   h.send({ type: 'event', origin: A, event: 'accountsChanged', data: [] });
   h.send({ type: 'event', origin: 'https://evil.com', event: 'accountsChanged', data: [] });
   await flush();
@@ -248,9 +217,10 @@ test('the popup\'s revoke goes to the hub (no focus); only the extension\'s own 
   assert.deepEqual(results, [false]);
   ask({ id: EXT_ID, url: `chrome-extension://${EXT_ID}/popup/popup.html` });
   await flush();
-  assert.equal(chrome.log.created.length, 1);
+  assert.equal(chrome.log.opened.length, 1);
+  assert.equal(chrome.log.opened[0].how, 'window');
   assert.equal(chrome.log.created[0].focused, false);
-  const h = hub(chrome, { windowId: lastWindow(chrome) });
+  const h = hub(chrome, lastOpened(chrome));
   await flush();
   assert.deepEqual(h.requests().map((r) => ({ type: r.type, origin: r.origin })), [{ type: 'revoke', origin: A }]);
   assert.deepEqual(answers, [{ ok: true }]);
@@ -265,13 +235,13 @@ test('at most 4 requests per site wait for the hub (-32005)', async () => {
   assert.equal(a.reply(4), null);
 });
 
-test('the hub asks to close when idle: the window closes, unless something is still waiting for it', async () => {
+test('the hub asks to close when idle: the notice window closes, unless something is still waiting for it', async () => {
   const { chrome } = setup({ snapshot: granted([A]) });
   const a = site(chrome);
   a.ask(1, 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
   await flush();
-  const id = lastWindow(chrome);
-  const h = hub(chrome, { windowId: id });
+  const { windowId } = lastOpened(chrome);
+  const h = hub(chrome, lastOpened(chrome));
   await flush();
   h.send({ type: 'close' });   // crossed with request 1: keep the window
   await flush();
@@ -280,7 +250,7 @@ test('the hub asks to close when idle: the window closes, unless something is st
   await flush();
   h.send({ type: 'close' });
   await flush();
-  assert.deepEqual(chrome.log.removed, [id]);
+  assert.deepEqual(chrome.log.removed, [windowId]);
   assert.equal((await chrome.storage.session.get(HUB_KEY))[HUB_KEY], undefined);
 });
 

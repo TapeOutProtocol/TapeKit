@@ -4,6 +4,10 @@
 // - Has no wallet_revokePermissions: "disconnect wallet" in the hub only clears TapeKit's own state and
 //   tells the user to remove tapekit.org from OKX's connected sites by hand.
 // - 56, 196 and 8453 are all built in.
+// - 4.19.0 (read 2026-10-16, research/manual-test.md): connect, sign and wallet_switchEthereumChain only work
+//   from the active tab of the focused normal window. Elsewhere connect and eth_sendTransaction fail 4001 with
+//   no prompt and the switch answers null without switching. The hub therefore runs those steps in a tab
+//   (design §10, 2026-10-16), and ensureChain (common.js) re-reads the chain after every switch.
 import { createAdapter } from './common.js';
 
 export const okx = createAdapter({

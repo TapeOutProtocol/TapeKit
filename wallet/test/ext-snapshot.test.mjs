@@ -2,7 +2,7 @@
 // Its local answers must be exactly the router's, and nothing outside this gateway's sites may get in.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanSnapshot, snapshotFor, localAnswer, connectedAnswer, needsFocus, grantedSites, siteChainOf } from '../extension/snapshot.js';
+import { cleanSnapshot, snapshotFor, localAnswer, connectedAnswer, needsTab, grantedSites, siteChainOf } from '../extension/snapshot.js';
 import { parseSiteOrigin } from '../src/origin.js';
 import { grant, setSiteChain } from '../src/permissions.js';
 import { setup as routerSetup, A as RA, X as RX } from './router-harness.mjs';
@@ -82,19 +82,20 @@ test('local answers: home chain without a snapshot; A\'s grant is not B\'s; acco
   assert.equal(siteChainOf({ perms: setSiteChain(perms, A, '0x2105'), accounts: [] }, site(A)), '0x2105');
 });
 
-test('focus: the card, the one-time wallet connection and the site dialog take focus; the gesture notice does not', () => {
+test('a tab for the card, the one-time wallet connection and the site dialog; the gesture notice, chain switches and revokes need none', () => {
   const perms = grant({}, A, [X], { chainId: '0x38', now: 1 });
   const connected = { perms, accounts: [X] };
-  assert.equal(needsFocus('personal_sign', true, connected, A), true);
-  assert.equal(needsFocus('eth_sendTransaction', false, connected, A), true);
-  assert.equal(needsFocus('eth_requestAccounts', true, null, B), true);                       // no wallet account yet
-  assert.equal(needsFocus('eth_requestAccounts', true, { perms, accounts: [] }, B), true);
-  assert.equal(needsFocus('eth_requestAccounts', false, connected, B), true);                 // site dialog
-  assert.equal(needsFocus('eth_requestAccounts', true, connected, B), false);                 // notice only
-  assert.equal(needsFocus('wallet_requestPermissions', 'yes', connected, B), true);           // only literal true
-  assert.equal(needsFocus('eth_requestAccounts', false, connected, A), false);                 // already connected
-  assert.equal(needsFocus('wallet_switchEthereumChain', false, connected, A), false);
-  assert.equal(needsFocus('wallet_revokePermissions', false, connected, A), false);
+  assert.equal(needsTab('personal_sign', true, connected, A), true);
+  assert.equal(needsTab('eth_sendTransaction', false, connected, A), true);
+  assert.equal(needsTab('eth_signTypedData_v4', false, connected, A), true);
+  assert.equal(needsTab('eth_requestAccounts', true, null, B), true);                       // no wallet account yet
+  assert.equal(needsTab('eth_requestAccounts', true, { perms, accounts: [] }, B), true);
+  assert.equal(needsTab('eth_requestAccounts', false, connected, B), true);                 // site dialog
+  assert.equal(needsTab('eth_requestAccounts', true, connected, B), false);                 // notice only
+  assert.equal(needsTab('wallet_requestPermissions', 'yes', connected, B), true);           // only literal true
+  assert.equal(needsTab('eth_requestAccounts', false, connected, A), false);                 // already connected
+  assert.equal(needsTab('wallet_switchEthereumChain', false, connected, A), false);
+  assert.equal(needsTab('wallet_revokePermissions', false, connected, A), false);
 });
 
 test('the popup list: granted sites only, with name and container, newest first', () => {

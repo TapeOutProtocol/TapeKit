@@ -39,13 +39,15 @@ function readCall(method, params) {
 
 /**
  * Messages for the hub (background → hub-relay → hub):
- *   { type: 'hello', managed }   the background opened this window and will close it (auto-close applies)
+ *   { type: 'hello', managed, popup }   managed: the background opened this tab or window and will close it
+ *                                        (auto-close applies); popup: it is a popup-type window, where the
+ *                                        wallet's connect, sign and chain-switch calls must not be made
  *   { type: 'request', id, origin, method, params, gesture }   origin and gesture as checked by the extension
  *   { type: 'revoke', id, origin }   the extension popup's "revoke" button
  */
 export function readToHub(msg) {
   if (!isObject(msg)) return null;
-  if (msg.type === 'hello') return { type: 'hello', managed: msg.managed === true };
+  if (msg.type === 'hello') return { type: 'hello', managed: msg.managed === true, popup: msg.popup === true };
   if (!isHubId(msg.id) || typeof msg.origin !== 'string') return null;
   if (msg.type === 'revoke') return { type: 'revoke', id: msg.id, origin: msg.origin };
   if (msg.type !== 'request') return null;

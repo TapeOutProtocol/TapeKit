@@ -4,8 +4,10 @@
 // scripts). A restarted worker reloads the table: the hub's answer still reaches the site.
 //
 // Entry: { hubId, kind: 'site'|'revoke', origin, documentId, tabId, siteId, method, params, gesture,
-//          state: 'queued'|'sent'|'done', windowId, reply, at }
-//   queued  waiting for the hub window `windowId` to be ready     sent  the hub has it
+//          state: 'queued'|'sent'|'done', hostTabId, moved, reply, at }
+//   tabId   the site's tab                hostTabId  the tab of the hub host it is bound to (null: choosing)
+//   queued  waiting for that hub to be ready     sent  the hub has it
+//   moved   true once moved from the notice window to a hub tab (hub-link.js; at most once)
 //   done    answered while the site's port was closed (the worker restarted); delivered when the relay resumes
 // The in-memory table is replaced on every change (never edited) and written through in order.
 

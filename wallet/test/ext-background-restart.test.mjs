@@ -3,7 +3,7 @@
 // A "restart" here is a second background instance on the same fake chrome storage, with fresh ports.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setup, site, hub, lastWindow, flush, A, X } from './ext-harness.mjs';
+import { setup, site, hub, lastOpened, flush, A, X } from './ext-harness.mjs';
 import { fakeChrome } from './fake-chrome.mjs';
 import { ROUTING_KEY } from '../extension/routing.js';
 import { SNAPSHOT_KEY } from '../extension/snapshot.js';
@@ -15,7 +15,8 @@ const SNAP = { perms: { [A]: { accounts: [X], chainId: '0x38', grantedAt: 5, hol
 function restart(chrome, tag) {
   const next = fakeChrome({ gateway: 'tapekit.org' });
   for (const area of ['local', 'session', 'sync']) next.storage[area].load(chrome.storage[area].peek());
-  next.windows = chrome.windows;   // windows outlive the worker
+  next.windows = chrome.windows;   // windows and tabs outlive the worker
+  next.tabs = chrome.tabs;
   return setup({ chrome: next, tag });
 }
 
@@ -23,9 +24,10 @@ async function signing(chrome) {
   const a = site(chrome, { documentId: 'doc-1' });
   a.ask('s1', 'personal_sign', ['0x00', X]);
   await flush();
-  const h = hub(chrome, { windowId: lastWindow(chrome) });
+  const opened = lastOpened(chrome);   // a hub tab
+  const h = hub(chrome, opened);
   await flush();
-  return { a, h, windowId: lastWindow(chrome), id: h.requests()[0].id };
+  return { a, h, opened, id: h.requests()[0].id };
 }
 
 test('requests waiting on the hub are kept in chrome.storage.session', async () => {
@@ -40,11 +42,11 @@ test('requests waiting on the hub are kept in chrome.storage.session', async () 
 
 test('a restarted worker still delivers the hub\'s answer once relay.js resumes', async () => {
   const first = setup({ snapshot: SNAP });
-  const { id, windowId } = await signing(first.chrome);
+  const { id, opened } = await signing(first.chrome);
   const second = restart(first.chrome, 'b');
-  const h = hub(second.chrome, { windowId, fresh: false });     // hub-relay reconnects
+  const h = hub(second.chrome, { ...opened, fresh: false });     // hub-relay reconnects
   await flush();
-  assert.deepEqual(h.got, [{ type: 'hello', managed: true }]);
+  assert.deepEqual(h.got, [{ type: 'hello', managed: true, popup: false }]);
   assert.equal(h.requests().length, 0);                           // nothing is sent twice
   h.answer(id, '0xsig');
   await flush();
@@ -58,23 +60,23 @@ test('a restarted worker still delivers the hub\'s answer once relay.js resumes'
 
 test('a restarted worker sends the answer at once when relay.js reconnected first', async () => {
   const first = setup({ snapshot: SNAP });
-  const { id, windowId } = await signing(first.chrome);
+  const { id, opened } = await signing(first.chrome);
   const second = restart(first.chrome, 'b');
   const a = site(second.chrome, { documentId: 'doc-1' });
   a.remote.postMessage({ type: 'resume', ids: ['s1'] });
   await flush();
   assert.equal(a.reply('s1'), null);                              // still with the hub
-  const h = hub(second.chrome, { windowId, fresh: false });
+  const h = hub(second.chrome, { ...opened, fresh: false });
   await flush();
   h.answer(id, '0xsig');
   await flush();
   assert.equal(a.reply('s1').result, '0xsig');
 });
 
-test('closing the hub window rejects what waits on it with 4001 and zh/en texts', async () => {
+test('closing the hub tab rejects what waits on it with 4001 and zh/en texts', async () => {
   const { chrome } = setup({ snapshot: SNAP });
-  const { a, windowId } = await signing(chrome);
-  await chrome.windows.remove(windowId);
+  const { a, opened } = await signing(chrome);
+  await chrome.tabs.remove(opened.tabId);
   await flush();
   const err = a.reply('s1').error;
   assert.equal(err.code, 4001);
@@ -83,24 +85,38 @@ test('closing the hub window rejects what waits on it with 4001 and zh/en texts'
   assert.match(err.data.messages.en, /closed/);
 });
 
+test('closing the notice window rejects what waits on it with 4001', async () => {
+  const { chrome } = setup({ snapshot: SNAP });
+  const a = site(chrome);
+  a.ask('w1', 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
+  await flush();
+  const opened = lastOpened(chrome);
+  assert.equal(opened.how, 'window');
+  hub(chrome, opened);
+  await flush();
+  await chrome.windows.remove(opened.windowId);
+  await flush();
+  assert.equal(a.reply('w1').error.code, 4001);
+});
+
 test('the hub page reloading loses what it held (4001); requests it never got are sent to the new page', async () => {
   const { chrome } = setup({ snapshot: SNAP });
-  const { a, h, windowId } = await signing(chrome);
+  const { a, h, opened } = await signing(chrome);
   h.remote.disconnect();                                          // the page unloads while this worker runs
   await flush();
   assert.equal(a.reply('s1').error.code, 4001);
   a.ask('s2', 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
   await flush();
-  const again = hub(chrome, { windowId, fresh: true });
+  const again = hub(chrome, { ...opened, fresh: true });
   await flush();
   assert.deepEqual(again.requests().map((r) => r.method), ['wallet_switchEthereumChain']);
 });
 
 test('after a restart, a hub page that is new (fresh) cannot answer for the old one: 4001', async () => {
   const first = setup({ snapshot: SNAP });
-  const { windowId } = await signing(first.chrome);
+  const { opened } = await signing(first.chrome);
   const second = restart(first.chrome, 'b');
-  hub(second.chrome, { windowId, fresh: true });
+  hub(second.chrome, { ...opened, fresh: true });
   await flush();
   const a = site(second.chrome, { documentId: 'doc-1' });
   a.remote.postMessage({ type: 'resume', ids: ['s1'] });
@@ -116,7 +132,7 @@ test('a site port that closes while this worker runs drops its unsent requests; 
   a.remote.disconnect();
   await flush();
   assert.deepEqual((await chrome.storage.session.get(PENDING_KEY))[PENDING_KEY], {});
-  const h = hub(chrome, { windowId: lastWindow(chrome) });
+  const h = hub(chrome, lastOpened(chrome));
   await flush();
   assert.equal(h.requests().length, 0);                           // never shown to the user
   const back = site(chrome, { documentId: 'doc-1' });             // e.g. back from the back/forward cache
@@ -125,18 +141,18 @@ test('a site port that closes while this worker runs drops its unsent requests; 
   assert.equal(back.reply('q1').error.code, 4900);
 });
 
-test('a hub that never says ready: 4900 after the timeout, and the window is closed', async () => {
+test('a hub that never says ready: 4900 after the timeout, and its tab is closed', async () => {
   const { chrome, timers } = setup({ snapshot: SNAP });
   const a = site(chrome);
   a.ask(1, 'personal_sign', ['0x00', X]);
   await flush();
-  const id = lastWindow(chrome);
+  const { tabId } = lastOpened(chrome);
   assert.equal(timers.count(), 1);
   timers.fireAll();
   await flush();
   assert.equal(a.reply(1).error.code, 4900);
   assert.equal(a.reply(1).error.data.reason, 'load');
-  assert.deepEqual(chrome.log.removed, [id]);
+  assert.deepEqual(chrome.log.tabsRemoved, [tabId]);
 });
 
 test('a ready hub cancels the timeout', async () => {
@@ -162,4 +178,26 @@ test('closing the site\'s tab drops its entries; old entries are dropped on load
   s.remote.postMessage({ type: 'resume', ids: [1] });
   await flush();
   assert.equal(s.reply(1).error.code, 4900);
+});
+
+test('after a restart, a stored hub tab that is no longer the hub fails what waited on it (4001) and is not reused', async () => {
+  const first = setup({ snapshot: SNAP });
+  const a = site(first.chrome, { documentId: 'doc-1' });
+  a.ask('s1', 'personal_sign', ['0x00', X]);
+  await flush();
+  const opened = lastOpened(first.chrome);                        // the hub has not loaded yet: s1 is queued
+  await first.chrome.tabs.update(opened.tabId, { url: 'https://example.com/' });
+  const second = restart(first.chrome, 'b');                      // the ready timer died with the old worker
+  const back = site(second.chrome, { documentId: 'doc-1' });
+  back.remote.postMessage({ type: 'resume', ids: ['s1'] });
+  await flush();
+  assert.equal(back.reply('s1'), null);
+  back.ask('s2', 'personal_sign', ['0x00', X]);
+  await flush();
+  assert.equal(back.reply('s1').error.code, 4001);
+  const fresh = lastOpened(first.chrome);                         // tabs (and their log) outlive the worker
+  assert.notEqual(fresh.tabId, opened.tabId);
+  const h = hub(second.chrome, fresh);
+  await flush();
+  assert.deepEqual(h.requests().map((r) => r.method), ['personal_sign']);
 });

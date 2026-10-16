@@ -55,6 +55,7 @@ const T = Object.freeze({
   'sites.since': { zh: '授权于 {date}', en: 'Authorized {date}' },
   'sites.revoke': { zh: '撤销', en: 'Revoke' },
 
+  'status.moved': { zh: '{site} 的请求需要用钱包，已转到 TapeKit 标签页继续。', en: 'The request from {site} needs the wallet and continues in a TapeKit tab.' },
   'status.failed': { zh: '{site} 的请求没有完成：{reason}', en: 'The request from {site} did not complete: {reason}' },
 
   'err.4001': { zh: '你拒绝了这个请求。', en: 'You rejected the request.' },
@@ -66,9 +67,10 @@ const T = Object.freeze({
   'err.-32005': { zh: '这个网站的请求太多，请稍后再试。', en: 'Too many requests from this site. Try again later.' },
   'err.-32602': { zh: '请求的参数不对。', en: 'The request parameters are invalid.' },
   'err.-32603': { zh: '出错了，请稍后再试。', en: 'Something went wrong. Try again later.' },
-  'err.closed': { zh: 'TapeKit 窗口被关掉了，请求已取消。', en: 'The TapeKit window was closed; the request was cancelled.' },
-  'err.popup': { zh: '浏览器拦住了 TapeKit 窗口。请点网站上的按钮再试。', en: 'The browser blocked the TapeKit window. Click the button on the site and try again.' },
-  'err.load': { zh: 'TapeKit 窗口没有响应，已关闭。请检查网络，再点网站上的按钮重试。', en: 'The TapeKit window did not respond and was closed. Check your connection, then click the button on the site again.' },
+  'err.closed': { zh: 'TapeKit 页面被关掉了，请求已取消。', en: 'The TapeKit page was closed; the request was cancelled.' },
+  'err.popup': { zh: '浏览器拦住了 TapeKit 页面。请点网站上的按钮再试。', en: 'The browser blocked the TapeKit page. Click the button on the site and try again.' },
+  'err.tab': { zh: 'TapeKit 只能在浏览器标签页里使用钱包，这个小窗口做不到。请再试一次。', en: 'TapeKit can use your wallet only from a browser tab, not from this small window. Try again.' },
+  'err.load': { zh: 'TapeKit 页面没有响应，已关闭。请检查网络，再点网站上的按钮重试。', en: 'The TapeKit page did not respond and was closed. Check your connection, then click the button on the site again.' },
   'err.other': { zh: '钱包返回了错误（{code}）。', en: 'The wallet returned an error ({code}).' },
 });
 

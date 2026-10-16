@@ -23,7 +23,7 @@ export const deferred = () => { let resolve; const promise = new Promise((r) => 
 export const tick = () => new Promise((r) => setTimeout(r, 0));
 export const rejectsWith = (p, code) => assert.rejects(p, (e) => { assert.equal(e.code, code, e.message); return true; });
 
-function fakeWallet({ accounts, connected, chain, known, signResult }) {
+function fakeWallet({ accounts, connected, chain, known, signResult, ignoreSwitch }) {
   const calls = [];
   const state = { accounts: connected ? [...accounts] : [], chain, known: new Set(known) };
   const sign = () => signResult;
@@ -33,7 +33,7 @@ function fakeWallet({ accounts, connected, chain, known, signResult }) {
     eth_chainId: () => state.chain,
     wallet_switchEthereumChain: ([{ chainId }]) => {
       if (!state.known.has(chainId)) throw { code: 4902, message: 'Unrecognized chain ID' };
-      state.chain = chainId;
+      if (!ignoreSwitch) state.chain = chainId;   // ignoreSwitch: OKX outside a focused tab answers null, no switch
       return null;
     },
     wallet_addEthereumChain: ([p]) => { state.known.add(p.chainId); return null; },
@@ -54,8 +54,9 @@ export function setup(opts = {}) {
   const {
     accounts = [X], connected = true, chain = '0x38', known = ['0x38', '0xc4', '0x2105'], signResult = '0xsig',
     siteDecision = 'ok', signDecision = 'ok', statuses = { '1.0.tape': 'not-opened' }, holders = {}, withWallet = true,
+    ignoreSwitch = false, canPrompt,
   } = opts;
-  const wallet = fakeWallet({ accounts, connected, chain, known, signResult });
+  const wallet = fakeWallet({ accounts, connected, chain, known, signResult, ignoreSwitch });
   let perms = deepFreeze({});
   const store = { get: () => perms, set: (p) => { perms = deepFreeze(p); } };
   const kernelCalls = [];
@@ -88,6 +89,7 @@ export function setup(opts = {}) {
     emit: (origin, event, data) => events.push([origin, event, data]),
     now: () => 1000,
     onError: (e, where) => errors.push([where, e]),
+    ...(canPrompt ? { canPrompt } : {}),
   });
   const call = (origin, method, params, gesture = false) => router.handle({ origin, method, params, gesture });
   return { router, wallet, ui, identity, events, reads, errors, call, kernelCalls, get perms() { return perms; } };

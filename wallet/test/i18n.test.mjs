@@ -34,6 +34,7 @@ test('every router error code has its own message in both languages', () => {
     }
   }
   assert.equal(errorText('en', 4001), 'You rejected the request.');
-  assert.equal(errorText('zh', 'closed'), 'TapeKit 窗口被关掉了，请求已取消。');
+  assert.equal(errorText('zh', 'closed'), 'TapeKit 页面被关掉了，请求已取消。');
+  assert.match(errorText('en', 'tab'), /browser tab/);
   assert.equal(errorText('en', 1234), 'The wallet returned an error (1234).');
 });

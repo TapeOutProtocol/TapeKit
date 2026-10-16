@@ -51,11 +51,27 @@ test('a request from the extension reaches the router with its origin and gestur
   bg.port.postMessage({ type: 'hello', managed: true });
   bg.port.postMessage({ type: 'request', id: 'h1', origin: A, method: 'eth_requestAccounts', params: [], gesture: true, extra: 'dropped' });
   await flush();
-  assert.deepEqual(calls.hello, [{ managed: true }]);
+  assert.deepEqual(calls.hello, [{ managed: true, popup: false }]);
   assert.deepEqual(calls.handle, [{ origin: A, method: 'eth_requestAccounts', params: [], gesture: true }]);
   assert.deepEqual(bg.got.at(-1), { type: 'response', id: 'h1', result: ['0xabc'] });
   assert.deepEqual(calls.pending, [1, 0]);
   assert.equal(calls.done[0].origin, A);
+});
+
+test('the background says whether the hub is in a popup-type window; only its word counts', async () => {
+  const { rt, win, channel, calls } = setup();
+  await flush();
+  assert.equal(channel.inPopupWindow(), false);
+  toHub(win, { type: 'hello', managed: true, popup: true }, { other: 1 });   // not from this window
+  await flush();
+  assert.equal(channel.inPopupWindow(), false);
+  rt.last().port.postMessage({ type: 'hello', managed: true, popup: 'yes' });   // only literal true
+  await flush();
+  assert.equal(channel.inPopupWindow(), false);
+  rt.last().port.postMessage({ type: 'hello', managed: true, popup: true });
+  await flush();
+  assert.equal(channel.inPopupWindow(), true);
+  assert.deepEqual(calls.hello.at(-1), { managed: true, popup: true });
 });
 
 test('nothing is accepted before hello, and only from this window, this origin, this tag and direction', async () => {

@@ -30,6 +30,13 @@ const DEFAULT_MESSAGES = Object.freeze({
   '-32005': 'Too many pending requests from this site.',
 });
 
+/**
+ * data.reason of the hub's 4900 "this window cannot reach the wallet". OKX Wallet refuses connect, sign and
+ * chain-switch calls from a popup-type window without showing anything (research/manual-test.md), so the hub
+ * never makes them there; the extension then moves the request to a hub tab (design §10, 2026-10-16).
+ */
+export const REASON_NEEDS_TAB = 'needs-tab';
+
 /** Abuse limits (design §5.2): serialized params per request, pending requests per site. */
 export const LIMITS = Object.freeze({
   maxParamsBytes: 256 * 1024,

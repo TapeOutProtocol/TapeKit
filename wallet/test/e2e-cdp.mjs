@@ -112,6 +112,21 @@ export async function startBrowser({ pageScripts, binding, extensionPath = null 
     return typeof r.result.value === 'string' ? JSON.parse(r.result.value) : r.result.value;
   }
 
+  /**
+   * Evaluate in an extension's service worker, the live one (Chrome may have restarted it), once `readyExpr`
+   * is true there. `url` is the worker script, e.g. chrome-extension://<id>/background.js.
+   */
+  async function inWorker(url, expr, readyExpr = `typeof chrome === 'object' && !!chrome.storage`) {
+    const worker = await until(async () => {
+      const w = workers.filter((x) => !x.closed && x.url === url).at(-1);
+      if (!w) return null;
+      await send('Runtime.runIfWaitingForDebugger', {}, w.sessionId).catch(() => {});
+      return (await evaluate(w.sessionId, readyExpr).catch(() => false)) ? w : null;
+    });
+    if (!worker) throw new Error('service worker not found: ' + url);
+    return evaluate(worker.sessionId, expr);
+  }
+
   /** A real click (trusted input, so it carries user activation) at the centre of `selector`. */
   async function click(sessionId, selector) {
     const at = await evaluate(sessionId, `(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return null;
@@ -143,5 +158,5 @@ export async function startBrowser({ pageScripts, binding, extensionPath = null 
     try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* left for the OS */ }
   }
 
-  return { send, pages, frames, workers, bindingCalls, errors, extensionId, extensionIds, evaluate, click, newTab, navigate, close };
+  return { send, pages, frames, workers, bindingCalls, errors, extensionId, extensionIds, evaluate, inWorker, click, newTab, navigate, close };
 }

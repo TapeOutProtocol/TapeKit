@@ -1,5 +1,6 @@
-// Hub side of the fallback channel (design §10.2): a site's client script opens the hub with window.open and
-// talks to it with postMessage. Messages use the protocol.js envelope:
+// Hub side of the fallback channel (design §10.2): a site's client script opens the hub with window.open (as a
+// new tab since 2026-10-16: no window features, see client/transport.js) and talks to it with postMessage.
+// Messages use the protocol.js envelope:
 //   site → hub  { channel, type: 'request', id, method, params }
 //   hub → site  { channel, type: 'response', id, result | error }   { channel, type: 'event', event, data }
 //   hub → site  { channel, type: 'ready' }   once, to the origin hinted in the hub URL (#origin=…)
@@ -9,14 +10,15 @@
 //     (origin.js) are read. Nothing the message says about its origin or a gesture is used (readEnvelope).
 //   - Replies and events go to opener.postMessage(msg, thatOrigin), never '*': if the opener has navigated
 //     elsewhere since, the browser drops them.
-//   - Gesture (design §6): the browser only lets a site open this popup inside a user gesture, so the FIRST
-//     request after the hub loads is the one that opened it. Only that request counts as a gesture, and only
-//     if it arrives within `gestureWindowMs`; every later request does not.
-//   - But the opener can reload or re-navigate the popup it opened at any time, without a click
-//     (popup.location = …, or window.open(url, sameName)). A reloaded hub must not hand out a fresh gesture,
+//   - Gesture (design §6): the browser only lets a site open a tab or a window inside a user gesture, so the
+//     FIRST request after the hub loads is the one that opened it. Only that request counts as a gesture, and
+//     only if it arrives within `gestureWindowMs`; every later request does not.
+//   - But the opener can reload or re-navigate the hub it opened at any time, without a click
+//     (hub.location = …, or window.open(url, sameName)). A reloaded hub must not hand out a fresh gesture,
 //     or a site could re-grant itself right after the user revoked it. The hub passes
-//     gestureAvailable = claimFirstLoad(sessionStorage): sessionStorage lives as long as the popup window,
-//     survives its reloads and navigations, and only the hub origin can write it.
+//     gestureAvailable = claimFirstLoad(sessionStorage): sessionStorage belongs to the hub's tab (a top-level
+//     browsing context, popup or not), survives its reloads and navigations, and only the hub origin can
+//     write it.
 //
 // Channel interface shared with later channels (the extension relay): { emit(origin, event, data) → bool,
 // pending() → number, stop() }. The hub fans router events out to every channel; each delivers only to the
@@ -29,7 +31,7 @@ const noop = () => {};
 export const FIRST_LOAD_KEY = 'tapekit-wallet:popup-loaded:v1';
 
 /**
- * True only on the first hub load in this popup window; marks the window so every later load gets false.
+ * True only on the first hub load in this tab; marks the tab so every later load gets false.
  * Unreadable or unwritable storage gives false (no gesture: the site confirmation is shown instead).
  * @param {Storage|null} storage  the hub's sessionStorage
  */

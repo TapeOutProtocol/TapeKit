@@ -53,9 +53,10 @@ export function setup({ chrome = null, snapshot = null, routing = true, tag = 'a
   return { chrome: c, bg, errors, timers, fetched };
 }
 
-/** A relay.js connection from a site page. */
-export function site(chrome, { origin = A, frameId = 0, documentId = 'doc-' + origin, tabId = 7, url = origin + '/' } = {}) {
-  const { port, remote } = fakePortPair(SITE_PORT, { id: EXT_ID, origin, frameId, documentId, url, tab: { id: tabId, windowId: 1 } });
+/** A relay.js connection from a site page (its tab is in window 1, a normal window, unless `windowId` says otherwise). */
+export function site(chrome, { origin = A, frameId = 0, documentId = 'doc-' + origin, tabId = 7, windowId = 1, url = origin + '/' } = {}) {
+  if (chrome.tabs.ensure) chrome.tabs.ensure({ id: tabId, windowId, url });
+  const { port, remote } = fakePortPair(SITE_PORT, { id: EXT_ID, origin, frameId, documentId, url, tab: { id: tabId, windowId } });
   chrome.runtime.onConnect.fire(port);
   const got = [];
   remote.onMessage.addListener((m) => got.push(m));
@@ -66,9 +67,14 @@ export function site(chrome, { origin = A, frameId = 0, documentId = 'doc-' + or
   };
 }
 
-/** A hub-relay.js connection from a hub page in window `windowId`; sends `ready` at once. */
-export function hub(chrome, { windowId, origin = HUB_ORIGIN, url = HUB_URL, frameId = 0, fresh = true } = {}) {
-  const { port, remote } = fakePortPair(HUB_PORT, { id: EXT_ID, origin, frameId, url, tab: { id: windowId * 10, windowId } });
+/**
+ * A hub-relay.js connection from a hub page in tab `tabId` (default: the window's own tab, windowId * 10); sends
+ * `ready` at once. Pass lastOpened(chrome) for the hub the background opened last.
+ */
+export function hub(chrome, { tabId, windowId, origin = HUB_ORIGIN, url = HUB_URL, frameId = 0, fresh = true } = {}) {
+  const known = chrome.tabs.all ? chrome.tabs.all().find((t) => t.id === tabId) : null;
+  const tab = { id: tabId ?? windowId * 10, windowId: windowId ?? (known ? known.windowId : 1) };
+  const { port, remote } = fakePortPair(HUB_PORT, { id: EXT_ID, origin, frameId, url, tab });
   chrome.runtime.onConnect.fire(port);
   const got = [];
   remote.onMessage.addListener((m) => got.push(m));
@@ -83,3 +89,5 @@ export function hub(chrome, { windowId, origin = HUB_ORIGIN, url = HUB_URL, fram
 }
 
 export const lastWindow = (chrome) => chrome.windows.ids().at(-1);
+/** The hub host the background opened last: { how: 'tab'|'window', tabId, windowId, opts }. */
+export const lastOpened = (chrome) => chrome.log.opened.at(-1);

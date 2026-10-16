@@ -13,7 +13,9 @@
 //     `hub-ready` that tells the relay to connect: without the extension, the hub posts nothing else.
 //
 // Same interface as the popup channel for the hub's fan-out: { emit(origin, event, data) → bool, pending(),
-// stop() }, plus publish(snapshot), requestClose(), requestFocus() and isManaged().
+// stop() }, plus publish(snapshot), requestClose(), requestFocus(), isManaged() and inPopupWindow().
+// inPopupWindow() is the background's word (it asks chrome.windows for the type of the hub's window): the page
+// cannot tell, since window.toolbar.visible reads true in an extension's popup window (measured 2026-10-16).
 // `beforeReply` runs right before each answer is posted: the hub publishes its grants there, so the extension
 // (which handles one port's messages in order) has stored them before the site sees the answer. Without it, a
 // site that calls eth_accounts right after a connect could be answered from the old copy.
@@ -25,7 +27,7 @@ const noop = () => {};
 
 /**
  * @param {{ win: Window, hubLocation: string, handle: (req: object) => Promise<unknown>,
- *           revoke: (origin: string) => Promise<unknown>, onHello?: (info: { managed: boolean }) => void,
+ *           revoke: (origin: string) => Promise<unknown>, onHello?: (info: { managed: boolean, popup: boolean }) => void,
  *           onPendingChange?: (n: number) => void, onRequestDone?: (info: object) => void,
  *           beforeReply?: () => void, onError?: (e: unknown, where: string) => void }} opts
  */
@@ -37,6 +39,7 @@ export function createExtChannel({
   const origin = win.location.origin;
   let connected = false;
   let managed = false;
+  let popup = false;
   let pending = 0;
 
   function post(msg) {
@@ -82,7 +85,8 @@ export function createExtChannel({
     if (msg.type === 'hello') {
       connected = true;
       managed = msg.managed;
-      onHello({ managed });
+      popup = msg.popup;
+      onHello({ managed, popup });
       return;
     }
     if (!connected) return;
@@ -108,6 +112,8 @@ export function createExtChannel({
     requestClose: () => (connected && managed ? post({ type: 'close' }) : false),
     requestFocus: () => (connected && managed ? post({ type: 'focus' }) : false),
     isManaged: () => connected && managed,
+    /** The extension says this hub runs in a popup-type window. */
+    inPopupWindow: () => connected && popup,
     pending: () => pending,
     stop() { win.removeEventListener('message', onMessage); },
   });

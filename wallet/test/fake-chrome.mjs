@@ -62,14 +62,40 @@ export function fakePortPair(name, sender) {
   return { port, remote };
 }
 
-/** A fake `chrome` with every API the background, routing.js and the popup touch. */
+/**
+ * A fake `chrome` with every API the background, routing.js and the popup touch. Windows have a type and tabs;
+ * window 1 is a normal window, focused, for the site tabs (`tabs.ensure`). A window made by windows.create gets
+ * one tab with id windowId * 10; tabs.create numbers its tabs from 500. `log.opened` lists every hub host
+ * opened: { how: 'tab'|'window', tabId, windowId, opts }.
+ */
 export function fakeChrome({ gateway = 'tapekit.org', granted = [] } = {}) {
   const onChanged = fakeEvent();
-  const windows = new Map();
+  const windows = new Map([[1, { id: 1, type: 'normal', focused: true }]]);
+  const tabs = new Map();
   let windowSeq = 100;
+  let tabSeq = 500;
+  let lastFocused = 1;
   let perms = new Set(granted);
   let scripts = [];
-  const log = { created: [], updated: [], removed: [], sentToTabs: [], requested: [] };
+  const log = { created: [], updated: [], removed: [], sentToTabs: [], requested: [], opened: [], tabsUpdated: [], tabsRemoved: [] };
+  const tabsIn = (windowId) => [...tabs.values()].filter((t) => t.windowId === windowId).sort((a, b) => a.index - b.index);
+  const copyTab = (t) => ({ ...t });
+  function putTab(tab) {
+    if (tab.active) for (const t of tabsIn(tab.windowId)) tabs.set(t.id, { ...t, active: false });
+    const others = tabsIn(tab.windowId).filter((t) => t.id !== tab.id);
+    const index = Math.min(Number.isInteger(tab.index) ? tab.index : others.length, others.length);
+    const ordered = [...others.slice(0, index), tab, ...others.slice(index)];
+    ordered.forEach((t, i) => tabs.set(t.id, { ...(t.id === tab.id ? tab : tabs.get(t.id)), index: i }));
+    return copyTab(tabs.get(tab.id));
+  }
+  function dropTab(id, isWindowClosing) {
+    const t = tabs.get(id);
+    if (!t) return false;
+    tabs.delete(id);
+    tabsIn(t.windowId).forEach((x, i) => tabs.set(x.id, { ...x, index: i }));
+    queueMicrotask(() => chrome.tabs.onRemoved.fire(id, { windowId: t.windowId, isWindowClosing }));
+    return true;
+  }
   const chrome = {
     log,
     runtime: {
@@ -92,14 +118,32 @@ export function fakeChrome({ gateway = 'tapekit.org', granted = [] } = {}) {
       async create(opts) {
         const id = ++windowSeq;
         log.created.push(structuredClone(opts));
-        windows.set(id, { id, focused: opts.focused === true, url: opts.url });
-        return { id, focused: opts.focused === true, tabs: [{ id: id * 10, windowId: id }] };
+        const focused = opts.focused === true;
+        windows.set(id, { id, type: opts.type || 'normal', focused, url: opts.url });
+        if (focused) lastFocused = id;
+        const tab = putTab({ id: id * 10, windowId: id, active: true, url: opts.url, openerTabId: null });
+        log.opened.push({ how: 'window', tabId: tab.id, windowId: id, opts: structuredClone(opts) });
+        return { id, focused, type: opts.type || 'normal', tabs: [copyTab(tab)] };
       },
       async get(id) { if (!windows.has(id)) throw new Error('No window with id: ' + id); return { ...windows.get(id) }; },
-      async update(id, info) { log.updated.push({ id, ...info }); windows.set(id, { ...windows.get(id), ...info }); return { ...windows.get(id) }; },
+      async getLastFocused({ windowTypes } = {}) {
+        const w = windows.get(lastFocused);
+        if (w && (!windowTypes || windowTypes.includes(w.type))) return { ...w };
+        const normal = [...windows.values()].find((x) => !windowTypes || windowTypes.includes(x.type));
+        if (!normal) throw new Error('No last-focused window');
+        return { ...normal };
+      },
+      async update(id, info) {
+        log.updated.push({ id, ...info });
+        if (!windows.has(id)) throw new Error('No window with id: ' + id);
+        windows.set(id, { ...windows.get(id), ...info });
+        if (info.focused === true) lastFocused = id;
+        return { ...windows.get(id) };
+      },
       async remove(id) {
         log.removed.push(id);
         if (!windows.delete(id)) throw new Error('No window with id: ' + id);
+        for (const t of tabsIn(id)) dropTab(t.id, true);
         queueMicrotask(() => chrome.windows.onRemoved.fire(id));
       },
       ids: () => [...windows.keys()],
@@ -112,6 +156,38 @@ export function fakeChrome({ gateway = 'tapekit.org', granted = [] } = {}) {
         return chrome.tabs.list.filter((t) => t.url.startsWith(prefix));
       },
       async sendMessage(tabId, msg, opts) { log.sentToTabs.push({ tabId, msg: structuredClone(msg), opts }); },
+      /** Test helper: a site tab that exists before the background sees it. */
+      ensure({ id, windowId = 1, active = true, url = '' }) {
+        if (!windows.has(windowId)) windows.set(windowId, { id: windowId, type: 'normal', focused: false });
+        return tabs.has(id) ? copyTab(tabs.get(id)) : putTab({ id, windowId, active, url, openerTabId: null });
+      },
+      async create(opts) {
+        const windowId = opts.windowId ?? lastFocused;
+        if (!windows.has(windowId)) throw new Error('No window with id: ' + windowId);
+        const tab = putTab({ id: ++tabSeq, windowId, index: opts.index, active: opts.active !== false, url: opts.url, openerTabId: opts.openerTabId ?? null });
+        log.opened.push({ how: 'tab', tabId: tab.id, windowId, opts: structuredClone(opts) });
+        return tab;
+      },
+      async get(id) { if (!tabs.has(id)) throw new Error('No tab with id: ' + id); return copyTab(tabs.get(id)); },
+      async update(id, info) {
+        log.tabsUpdated.push({ id, ...info });
+        if (!tabs.has(id)) throw new Error('No tab with id: ' + id);
+        if (typeof info.url === 'string') tabs.set(id, { ...tabs.get(id), url: info.url });   // the tab shows another page
+        return info.active ? putTab({ ...tabs.get(id), active: true }) : copyTab(tabs.get(id));
+      },
+      /** The user drags a tab to another window (it becomes that window's active tab). */
+      async move(id, { windowId, index = -1 }) {
+        if (!tabs.has(id) || !windows.has(windowId)) throw new Error('No tab or window');
+        const tab = tabs.get(id);
+        tabs.delete(id);
+        tabsIn(tab.windowId).forEach((x, i) => tabs.set(x.id, { ...x, index: i }));
+        return putTab({ ...tab, windowId, index: index < 0 ? undefined : index, active: true });
+      },
+      async remove(id) {
+        log.tabsRemoved.push(id);
+        if (!dropTab(id, false)) throw new Error('No tab with id: ' + id);
+      },
+      all: () => [...tabs.values()].map(copyTab),
     },
     permissions: {
       onRemoved: fakeEvent(),

@@ -14,11 +14,17 @@
 //                Events are pushed through this callback (not router.on): the channel that owns the
 //                site's port or window does the delivery.
 //   now          () → ms; onError (error, where): failures that must not fail the request (e.g. the notice)
+//   canPrompt    () → false while the hub runs in a popup-type window. Wallets such as OKX refuse their
+//                user-facing calls from there without a prompt (connect fails 4001, a chain switch answers null
+//                without switching), so the router never makes them: a request that needs the one-time wallet
+//                connection or a signature fails 4900 with data.reason 'needs-tab' before any card is shown,
+//                and the extension moves it to a hub tab. Default: always true.
 //
 // handle({ origin, method, params, gesture }) → result, or rejects with a plain { code, message, data? }.
 //   origin   must come from the browser (MessageEvent.origin / MessageSender.origin), never from the page.
 //   gesture  true only when the trusted side saw a user activation (design §6); anything else is false.
-import { classify, rpcError, isRpcError, paramsSize, LIMITS, ERR } from './protocol.js';
+import { classify, rpcError, isRpcError, paramsSize, LIMITS, ERR, REASON_NEEDS_TAB } from './protocol.js';
+import { tr } from './i18n.js';
 import { parseSiteOrigin } from './origin.js';
 import { chainForArea, chainParams, isSupportedChain, normalizeChainId } from './chains.js';
 import { grant, revoke, accountsFor, siteChain, setSiteChain, isGranted, grantedOrigins, grantedAt, grantHolder, permissionList, checkPermissionRequest } from './permissions.js';
@@ -44,7 +50,7 @@ function checkDeps({ hubLocation, store, identity, ui, rpc }) {
 
 export function createRouter(deps = {}) {
   checkDeps(deps);
-  const { hubLocation, adapter = null, provider = null, store, identity, ui, rpc, emit = noop, now = Date.now, onError = noop } = deps;
+  const { hubLocation, adapter = null, provider = null, store, identity, ui, rpc, emit = noop, now = Date.now, onError = noop, canPrompt = () => true } = deps;
   const queue = createQueue(LIMITS.maxQueuedPerSite);
   let walletAccounts = Object.freeze([]);   // last known accounts of the real wallet (replaced, never mutated)
 
@@ -52,6 +58,12 @@ export function createRouter(deps = {}) {
 
   function requireWallet() {
     if (!adapter || !provider) throw rpcError(ERR.DISCONNECTED);
+  }
+
+  /** Before a wallet call the user must see (connect, chain switch, signature): fail here, never in silence. */
+  function requirePrompt() {
+    if (canPrompt() === true) return;
+    throw rpcError(ERR.DISCONNECTED, tr('en', 'err.tab'), { reason: REASON_NEEDS_TAB, messages: { zh: tr('zh', 'err.tab'), en: tr('en', 'err.tab') } });
   }
 
   /** Replace the cached wallet accounts and tell each granted site whose view changed. Returns notified origins. */
@@ -152,6 +164,7 @@ export function createRouter(deps = {}) {
     await dropStaleGrant(site, id);
     const { accounts: current } = await readWalletAccounts();
     let visible = accountsFor(await store.get(), site.origin, current);
+    if (!visible.length && !current.length) requirePrompt();   // the one-time wallet connection would follow
     if (!visible.length) visible = await newGrant(site, id, current, gesture);
     if (method === 'eth_requestAccounts') return visible;
     return permissionList(site.origin, visible, grantedAt(await store.get(), site.origin));
@@ -212,6 +225,7 @@ export function createRouter(deps = {}) {
     if (asked !== null && asked !== chainHex) throw rpcError(ERR.CHAIN_DISCONNECTED, `The request is for chain ${asked}, but this site is on ${chainHex}.`);
     await mustBeCurrent(site, perms, address);
     const siweWarning = method === 'personal_sign' && siweMismatch(params[0], site.host);
+    requirePrompt();   // the chain switch and the signature below
     await confirm(() => ui.confirmSign({ origin: site.origin, identity: id, method, params, chainId: chainHex, siweWarning }));
     await mustBeCurrent(site, perms, address);   // the user may have switched accounts while the card was open
     await adapter.ensureChain(provider, chainHex, chainParams(chainHex));

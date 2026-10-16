@@ -4,7 +4,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { createPopupTransport, POPUP_NAME, POPUP_FEATURES } from '../client/transport.js';
+import { createPopupTransport, HUB_NAME } from '../client/transport.js';
 import { siteContext, installClient } from '../client/install.js';
 import { buildClient, clientConfig, CLIENT_FILE } from '../build-client.mjs';
 import { makeReady, makeResult, makeError, makeEvent, rpcError } from '../src/protocol.js';
@@ -21,7 +21,7 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 const windows = [];   // every fake page window, so afterEach can close popups a failed test left open
 
 function fakePopup() {
-  return { closed: false, posted: [], postMessage(msg, target) { this.posted.push({ msg: structuredClone(msg), target }); }, close() { this.closed = true; } };
+  return { closed: false, posted: [], focused: 0, postMessage(msg, target) { this.posted.push({ msg: structuredClone(msg), target }); }, close() { this.closed = true; }, focus() { this.focused += 1; } };
 }
 
 /** A page window: records listeners so tests deliver MessageEvent-like objects directly. */
@@ -148,11 +148,28 @@ test('without a user gesture (window.open refused) a hub request fails 4100 in b
   assert.equal((await zh.outcome(zh.call('personal_sign', ['0x68', X]))).error.message, CONFIG.messages.popup.zh);
 });
 
-test('opens the hub with the exact URL, name and features, and no noopener', async () => {
+test('opens the hub as a tab: exact URL and name, no window features (no popup window, no noopener)', async () => {
   const h = setup();
   h.outcome(h.call('eth_requestAccounts', []));
-  assert.deepEqual(h.win.opened[0], [HUB_URL + '#origin=' + encodeURIComponent(SITE), POPUP_NAME, POPUP_FEATURES]);
-  assert.ok(!POPUP_FEATURES.includes('noopener') && !POPUP_FEATURES.includes('noreferrer'));
+  // OKX refuses connect and sign calls from a popup-type window (research/manual-test.md): any features string
+  // ('popup', a width, 'noopener') would change that, so there is none at all.
+  assert.deepEqual(h.win.opened[0], [HUB_URL + '#origin=' + encodeURIComponent(SITE), HUB_NAME]);
+  assert.equal(h.win.opened[0].length, 2);
+  await closeAll(h.win);
+});
+
+test('an open hub tab is brought to the front for a connect or a signature, not for a chain switch', async () => {
+  const h = setup();
+  h.outcome(h.call('wallet_switchEthereumChain', [{ chainId: '0x38' }]));
+  const hub = h.win.popups[0];
+  h.win.deliver(makeReady(), { source: hub });
+  assert.equal(hub.focused, 0, 'the tab the browser just opened is already in front');
+  h.outcome(h.call('wallet_switchEthereumChain', [{ chainId: '0xc4' }]));
+  assert.equal(hub.focused, 0);
+  h.outcome(h.call('personal_sign', ['0x68', X]));
+  h.outcome(h.call('eth_requestAccounts', []));
+  assert.equal(hub.focused, 2);
+  assert.equal(h.win.opened.length, 1);
   await closeAll(h.win);
 });
 

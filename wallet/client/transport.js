@@ -1,24 +1,29 @@
-// Popup transport for the fallback client (design §10.2): the site page opens the hub on the gateway root with
+// Hub transport for the fallback client (design §10.2): the site page opens the hub on the gateway root with
 // window.open and talks to it with postMessage (envelope: protocol.js; hub side: src/popup-channel.js).
 // Bundled into wallet/client.js by wallet/build-client.mjs; its only import is protocol.js, which is bundled too.
 //
 // Rules this file keeps:
 //   - Only requests that need the hub open it. Local answers (chain, accounts), read-only calls (straight to a
-//     public node of the site's chain) and unknown methods (4200) never open a window.
+//     public node of the site's chain) and unknown methods (4200) never open a page.
+//   - The hub opens as a new tab, not a popup window: window.open with a name and no window features (design
+//     §10, 2026-10-16). OKX Wallet refuses connect, sign and chain-switch calls from a popup-type window without
+//     a prompt (research/manual-test.md). The opener is kept (never noopener): the hub talks to this page through
+//     it. The hub closes its own tab when idle; Chrome then shows the tab that opened it again.
 //   - window.open runs synchronously inside request(), so it is still inside the click that caused it. When the
 //     browser refuses (no user gesture, or popups blocked) the request fails with 4100 and asks for a click.
 //   - The hub treats only the FIRST request after its `ready` as carrying the click, so that request is the one
-//     that opened the window. Requests made before `ready` are queued in order; the sync reads go last.
-//   - Strict postMessage: sends go to the exact hub origin, and only messages whose source is the popup this
+//     that opened the tab. Requests made before `ready` are queued in order; the sync reads go last.
+//   - A connect or a signature sent to a hub tab that is already open brings that tab to the front (an opener
+//     may focus the window it opened): the wallet only answers the active tab, and the user has to see the card.
+//   - Strict postMessage: sends go to the exact hub origin, and only messages whose source is the hub this
 //     page opened and whose origin is the hub origin are read.
-//   - When the popup closes (polled: there is no close event across origins), every pending request fails 4001.
-//   - When the hub never says `ready` (it failed to load, or the window is not a TapeKit hub), the queued
-//     requests would wait forever: after `readyTimeoutMs` the window is closed and they fail 4900. Nothing was
+//   - When the hub closes (polled: there is no close event across origins), every pending request fails 4001.
+//   - When the hub never says `ready` (it failed to load, or the page is not a TapeKit hub), the queued
+//     requests would wait forever: after `readyTimeoutMs` the hub is closed and they fail 4900. Nothing was
 //     sent to it yet, so closing it cannot drop a request the wallet is working on.
 import { ERR, LIMITS, classify, rpcError, paramsSize, makeRequest, readEnvelope } from '../src/protocol.js';
 
-export const POPUP_NAME = 'tapekit-wallet';
-export const POPUP_FEATURES = 'popup,width=400,height=640';
+export const HUB_NAME = 'tapekit-wallet';   // window.open target name; no features string, so a tab
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const CHAIN_HEX = /^0x[0-9a-f]{1,14}$/;
@@ -52,8 +57,8 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
   const doFetch = fetchImpl || ((url, init) => win.fetch(url, init));
   const failure = (code, key) => rpcError(code, messages[key][lang], { reason: key, messages: { zh: messages[key].zh, en: messages[key].en } });
 
-  let popup = null;           // the hub window this page opened
-  let ready = false;          // the hub in `popup` has said `ready`
+  let hub = null;             // the hub tab this page opened
+  let ready = false;          // the hub in `hub` has said `ready`
   let outbox = [];            // requests waiting for `ready`, oldest first
   let pending = new Map();    // id → { method, resolve, reject }  (replaced on change, never edited)
   let seq = 0;
@@ -119,11 +124,11 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
     return body.result;
   }
 
-  // ---- popup session ----
+  // ---- hub session ----
 
   function post(msg) {
     try {
-      popup.postMessage(msg, hubOrigin);
+      hub.postMessage(msg, hubOrigin);
     } catch {
       settle(msg.id, (p) => p.reject(rpcError(ERR.INVALID_PARAMS, 'The request could not be sent to TapeKit.')));
     }
@@ -136,7 +141,7 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
     fn(p);
   }
 
-  /** Fail every request this page is waiting on: popup closed or reloaded (4001), or never ready (4900). */
+  /** Fail every request this page is waiting on: hub closed or reloaded (4001), or never ready (4900). */
   function failAll(code = ERR.USER_REJECTED, key = 'closed') {
     const all = pending;
     pending = new Map();
@@ -153,33 +158,41 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
     if (poll !== null) clearInterval(poll);
     poll = null;
     stopReadyTimer();
-    popup = null;
+    hub = null;
     ready = false;
     failAll(code, key);
   }
 
   function onReadyTimeout() {
     readyTimer = null;
-    if (!popup || ready) return;
-    const w = popup;
+    if (!hub || ready) return;
+    const w = hub;
     endSession(ERR.DISCONNECTED, 'load');
     try { w.close(); } catch { /* the user can still close it */ }
   }
 
-  /** Reuse the open hub, or open it now (inside the caller's click). False when the browser refuses. */
-  function openHub() {
-    if (popup && !popup.closed) return true;
-    if (popup) endSession();
+  /**
+   * Reuse the open hub (brought to the front when the user has something to do there), or open it now as a
+   * new tab, inside the caller's click. False when the browser refuses.
+   */
+  function openHub(kind) {
+    if (hub && !hub.closed) {
+      if (kind === 'sign' || kind === 'permission') {
+        try { hub.focus(); } catch { /* the hub still answers; the user can switch to its tab */ }
+      }
+      return true;
+    }
+    if (hub) endSession();
     let w = null;
     try {
-      w = win.open(hubUrl + '#origin=' + encodeURIComponent(win.location.origin), POPUP_NAME, POPUP_FEATURES);
+      w = win.open(hubUrl + '#origin=' + encodeURIComponent(win.location.origin), HUB_NAME);
     } catch {
       w = null;
     }
     if (!w) return false;
-    popup = w;
+    hub = w;
     ready = false;
-    poll = setInterval(() => { if (popup && popup.closed) endSession(); }, pollMs);
+    poll = setInterval(() => { if (hub && hub.closed) endSession(); }, pollMs);
     readyTimer = setTimeout(onReadyTimeout, readyTimeoutMs);
     return true;
   }
@@ -226,7 +239,7 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
   }
 
   function onMessage(event) {
-    if (!popup || !event || event.source !== popup || event.origin !== hubOrigin) return;
+    if (!hub || !event || event.source !== hub || event.origin !== hubOrigin) return;
     const msg = readEnvelope(event.data);
     if (!msg) return;
     if (msg.type === 'ready') onReady();
@@ -234,14 +247,14 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
     else if (msg.type === 'event') onEvent(msg);
   }
 
-  function viaHub(method, params) {
+  function viaHub(kind, method, params) {
     if (paramsSize(params) > LIMITS.maxParamsBytes) return Promise.reject(rpcError(ERR.INVALID_PARAMS, 'Request parameters are larger than 256 KB.'));
     try {
       if (typeof structuredClone === 'function') structuredClone(params);   // fail now, not after the click is used up
     } catch {
       return Promise.reject(rpcError(ERR.INVALID_PARAMS, 'params must be plain data.'));
     }
-    if (!openHub()) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
+    if (!openHub(kind)) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
     const id = ++seq;
     const msg = makeRequest(id, method, params);
     return new Promise((resolve, reject) => {
@@ -259,7 +272,7 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
       if (kind === 'local') return Promise.resolve(local(method));
       if (kind === 'read') return read(method, params);
       if (kind === 'reject') return Promise.reject(rpcError(ERR.UNSUPPORTED_METHOD, `TapeKit does not support ${String(method).slice(0, 100)}.`));
-      return viaHub(method, params);
+      return viaHub(kind, method, params);
     },
     subscribe(fn) { listener = typeof fn === 'function' ? fn : () => {}; },
   });

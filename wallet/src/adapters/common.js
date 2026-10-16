@@ -73,7 +73,9 @@ async function currentChain(provider) {
 /**
  * Put the real wallet on `chainHex` before forwarding a signature (design §5.3). On 4902 the chain is added
  * with TapeKit's own params (a plain copy; never anything a site supplied) and switched to again.
- * The final read catches wallets that return without switching (Binance does for unconnected origins).
+ * The final read catches wallets that return without switching: Binance does for unconnected origins, and OKX
+ * answers null without switching when the request does not come from the active tab of the focused normal
+ * window (research/manual-test.md). Then the switch did not happen: 4901, and the caller forwards nothing.
  */
 async function ensureChain(provider, chainHex, chainParams) {
   if (!chainParams || chainParams.chainId !== chainHex) throw rpcError(-32602, 'ensureChain: params do not match the chain');

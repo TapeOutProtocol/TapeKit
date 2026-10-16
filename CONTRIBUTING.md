@@ -27,8 +27,8 @@ Node ≥ 18 (the tests use Node's built-in test runner). Google Chrome is needed
 | `npm run build:extension` | the extension assembles and no import leaves the package | no |
 | `npm run test:mainnet` | kernel against BNB Chain mainnet, read-only, no keys | yes (public nodes) |
 | `npm run test:e2e` | Service Worker gateway in real headless Chrome against mainnet | yes, plus Chrome |
-| `npm run test:wallet:e2e` | wallet router (hub and `wallet/client.js`) in real headless Chrome, mainnet read-only, fake wallet | yes, plus Chrome |
-| `npm run test:wallet:e2e:extension` | wallet router through the extension (test build loaded over CDP, then the popup's enable button on the normal build), mainnet read-only, fake wallet | yes, plus Chrome |
+| `npm run test:wallet:e2e` | wallet router (hub and `wallet/client.js`) in real headless Chrome, mainnet read-only, fake wallet (an extension that copies OKX Wallet's rule: connect and sign only from the active tab of a normal window) | yes, plus Chrome |
+| `npm run test:wallet:e2e:extension` | wallet router through the extension (test build loaded over CDP, then the popup's enable button on the normal build), mainnet read-only, the same fake wallet | yes, plus Chrome |
 
 Run the first three before every pull request; run the mainnet and end-to-end checks when you touch the kernel's chain code, the gateway, `wallet/` or the extension. CI runs the offline checks on every push and pull request, and the mainnet checks as a non-blocking job.
 

@@ -142,6 +142,18 @@ test('ensureChain stops on other switch errors and checks the result', async () 
   await assert.rejects(() => okx.ensureChain(fakeWallet(), '0x2105', chainParams('0x38')), (e) => e.code === -32602, 'params must match the chain');
 });
 
+test('ensureChain: OKX answering the switch with null without switching (outside a focused tab) gives 4901, also after an add', async () => {
+  // research/manual-test.md: OKX 4.19.0 returns null for wallet_switchEthereumChain from a popup window or a
+  // background tab and stays on its chain. The final eth_chainId read is what catches it.
+  const quiet = fakeWallet({ chain: '0x38', ignoreSwitch: true });
+  await assert.rejects(() => okx.ensureChain(quiet, '0x2105', chainParams('0x2105')), (e) => e.code === 4901 && /0x2105/.test(e.message));
+  assert.deepEqual(quiet.calls.map((c) => c.method), ['eth_chainId', 'wallet_switchEthereumChain', 'eth_chainId']);
+  const added = fakeWallet({ chain: '0x38', known: ['0x38'], ignoreSwitch: true });
+  await assert.rejects(() => okx.ensureChain(added, '0xc4', chainParams('0xc4')), (e) => e.code === 4901);
+  assert.deepEqual(added.calls.map((c) => c.method), ['eth_chainId', 'wallet_switchEthereumChain', 'wallet_addEthereumChain', 'wallet_switchEthereumChain', 'eth_chainId']);
+  assert.equal(added.state.chain, '0x38');
+});
+
 test('revoke: OKX has no wallet_revokePermissions, Binance does', async () => {
   const w1 = fakeWallet();
   assert.deepEqual(await okx.revoke(w1), { revoked: false });
