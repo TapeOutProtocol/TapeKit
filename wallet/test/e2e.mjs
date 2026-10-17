@@ -4,9 +4,10 @@
 // wallet/client.js injected into site pages as if the owner had bundled it. User gestures are real CDP mouse
 // input; element.click() is not one.
 // The fake wallet is loaded as an extension (e2e-pages.mjs) because it applies OKX Wallet 4.19.0's focus rule
-// with chrome.tabs/chrome.windows: connect, sign and chain-switch calls from anything but the active tab of the
-// focused normal window are refused without a prompt (research/manual-test.md). The TapeKit extension is not
-// loaded. The fake's background also lists tabs, for the checks that the hub opens as a tab next to the site.
+// with chrome.tabs/chrome.windows: connect, transaction and chain-switch calls from anything but the active tab
+// of the focused normal window are refused without a prompt, while a plain personal_sign and typed data pass
+// (research/manual-test.md). The TapeKit extension is not loaded. The fake's background also lists tabs, for the
+// checks that the hub opens as a tab next to the site, or as a small popup window for a message signature (D-i).
 // Run: npm run test:wallet:e2e   (needs Google Chrome and network; no keys, no transactions)
 import http from 'node:http';
 import fs from 'node:fs';
@@ -16,7 +17,7 @@ import server from '../../sw-gateway/dev-server.mjs';
 import { createKernel } from '../../kernel/src/index.js';
 import { readNodes } from '../src/chains.js';
 import { startBrowser, until, sleep } from './e2e-cdp.mjs';
-import { writeFakeWalletExtension, tabsState, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE, OKX_DENIED } from './e2e-pages.mjs';
+import { writeFakeWalletExtension, tabsState, hubWindow, typedData, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE } from './e2e-pages.mjs';
 
 // Mainnet sites, all checked with the kernel on 2026-10-08 (research/live-sites.md). Swap them here if one lapses.
 const SITE_A = { name: '433.0.tape', label: '433-0' };
@@ -52,9 +53,11 @@ const b = await startBrowser({ pageScripts: [MARKER, CLIENT], binding: BINDING, 
 const ev = (page, expr) => b.evaluate(page.sessionId, expr);
 const walletCalls = () => b.bindingCalls.map((c) => JSON.parse(c.payload));
 const connects = () => walletCalls().filter((c) => c.method === 'eth_requestAccounts').length;
+const signs = () => walletCalls().filter((c) => c.method === 'personal_sign');
 const refusedCalls = () => walletCalls().filter((c) => c.refused);
 const tabsNow = () => tabsState(b, b.extensionId);
 const tabAt = (tabs, prefix) => tabs.find((t) => t.url.startsWith(prefix)) || null;
+const windowOf = (hub, site) => hubWindow(b, b.extensionId, hub, site);
 const popupsOf = (opener) => [...b.pages.values()].filter((p) => p.openerId === opener.targetId);
 const openHubOf = (opener) => popupsOf(opener).filter((p) => !p.closed && p.url.startsWith(HUB)).at(-1);
 const HUB_STATE = `(() => { const c = document.getElementById('card'), t = document.getElementById('toast');
@@ -142,15 +145,21 @@ try {
   check('A: accountsChanged event and eth_accounts now give the address, still answered locally', J(acc1.result) === J([FAKE_ACCOUNT])
     && (await events(a)).some(([e, d]) => e === 'accountsChanged' && J(d) === J([FAKE_ACCOUNT])) && !openHubOf(a), J(await events(a)));
 
-  // ---- 3. AC5: signing on A goes card → Continue → wallet; forged replies are ignored
+  // ---- 3. AC5: signing on A goes card → Continue → wallet; forged replies are ignored. A message signature
+  // opens the hub in a small popup window, not a tab (D-i, design §10.3 2026-10-17).
   const text = `TapeKit e2e: sign in to ${SITE_A.name}`;
   const msgHex = '0x' + Buffer.from(text).toString('hex');
   await clickCall(a, 'sign1', 'personal_sign', [msgHex, FAKE_ACCOUNT]);
   const hub2 = await hubOf(a);
   const card = await waitCard(hub2);
+  const win2 = await windowOf(hub2, a);
+  check('D-i personal_sign opens the hub in a small popup window: chrome.windows type popup, its own CDP window of about 400 px, not a tab',
+    win2.type === 'popup' && win2.ownWindow && win2.width <= 500, J(win2));
   const wasDisabled = await ev(hub2, `document.querySelector(${J(OK_BTN)}).disabled`);
   check('AC5 the card shows A\'s identity and the message before the wallet sees anything', card && has(card.card, SITE_A.name, A.cpuName, A.container, text)
     && !walletCalls().some((c) => c.method === 'personal_sign'), card && card.card.slice(0, 200));
+  check('D-i the message card has no chain row (a personal message is not chain-bound; typed data keeps it, step 4)', card && !has(card.card, 'BNB Smart Chain')
+    && !card.card.includes('(0x38)'), card && card.card.slice(0, 300));
   check('clickjacking: Continue starts disabled, focus on Reject', wasDisabled === true && card.focus === card.buttons[0].text, J(card && card.buttons) + ' focus=' + (card && card.focus));
   await b.click(hub2.sessionId, OK_BTN);   // too early: inside the 600 ms gate
   await ev(a, `(() => { const forged = (id) => ({ channel: 'tapekit-wallet/1', type: 'response', id, result: '0xforged' });
@@ -164,45 +173,80 @@ try {
   check('clickjacking: a click on Continue inside the 600 ms gate does nothing', wasDisabled === true && early === null && !walletCalls().some((c) => c.method === 'personal_sign'), J(early));
   await pressContinue(hub2);
   const sign1 = await result(a, 'sign1');
-  const fwd = walletCalls().filter((c) => c.method === 'personal_sign');
+  const fwd = signs();
   check('AC5 after Continue the wallet signs and A gets its result unchanged', sign1.result === FAKE_SIGNATURE && fwd.length === 1 && J(fwd[0].params) === J([msgHex, FAKE_ACCOUNT]), J(sign1));
+  check('D-i in that popup window the fake, like OKX, lets the plain personal_sign through although its focus check fails there; no chain switch',
+    fwd.length === 1 && fwd[0].focused === false && fwd[0].refused === false && refusedCalls().length === 0 && !walletCalls().some((c) => c.method === 'wallet_switchEthereumChain'), J(fwd[0]));
   check('forged replies from the page itself and from an opaque-origin frame are ignored', sign1.result === FAKE_SIGNATURE
     && !(await events(a)).some(([, d]) => J(d).includes(OTHER_ACCOUNT)));
+  check('D-i the popup window closes by itself when done', !!(await waitHubClosed(a)));
 
-  // ---- 4. AC6 wrong signer, AC7 chains (the hub stays open between these, so they need no new gesture)
+  // ---- 4. AC6 wrong signer, AC7 chains
   await clickCall(a, 'sign2', 'personal_sign', [msgHex, OTHER_ACCOUNT]);
   const sign2 = await result(a, 'sign2');
-  check('AC6 signing with an address A was not given is refused with 4100', sign2.error && sign2.error.code === 4100 && walletCalls().filter((c) => c.method === 'personal_sign').length === 1, J(sign2));
+  check('AC6 signing with an address A was not given is refused with 4100', sign2.error && sign2.error.code === 4100 && signs().length === 1, J(sign2));
+  await waitHubClosed(a);
   await clickCall(a, 'sw196', 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
   const sw196 = await result(a, 'sw196');
   await call(a, 'cid196', 'eth_chainId');
   check('AC7 A switches to X Layer: null, chainChanged, eth_chainId 0xc4', sw196.result === null && (await result(a, 'cid196')).result === '0xc4'
     && (await events(a)).some(([e, d]) => e === 'chainChanged' && d === '0xc4'), J(sw196));
+  await waitHubClosed(a);
+  // Typed data is chain-bound: the wallet (on BNB Chain) must move to X Layer. With the script it opens a tab,
+  // since a page has no second click to move it to a tab later.
   const mark = walletCalls().length;
-  // The user goes back to A's tab while the hub tab from the switch is still open: the signature must bring
-  // that tab to the front (the wallet only answers the active tab).
+  await clickCall(a, 'typed3', 'eth_signTypedData_v4', [FAKE_ACCOUNT, typedData(196)]);
+  const hub3 = await hubOf(a);
+  const card3 = await waitCard(hub3);
+  const tabs3 = await tabsNow();
+  const [t3, a3] = [tabAt(tabs3, HUB), tabAt(tabs3, siteUrl(SITE_A))];
+  check('typed data (it may need a chain switch) opens the hub as a tab next to A, not a popup window', t3 && a3 && t3.windowType === 'normal'
+    && t3.windowId === a3.windowId && t3.active && t3.index === a3.index + 1, J({ t3, a3 }));
+  await pressContinue(hub3);
+  const typed3 = await result(a, 'typed3');
+  const seq = walletCalls().slice(mark).filter((c) => c.method.startsWith('wallet_') || c.method.startsWith('eth_sign') || c.method === 'personal_sign');
+  const add = seq.find((c) => c.method === 'wallet_addEthereumChain');
+  check('AC7 typed data on X Layer: the wallet lacks 0xc4, TapeKit adds it with its own params, switches, then signs', typed3.result === FAKE_SIGNATURE
+    && J(seq.map((c) => c.method)) === J(['wallet_switchEthereumChain', 'wallet_addEthereumChain', 'wallet_switchEthereumChain', 'eth_signTypedData_v4'])
+    && add.params[0].chainId === '0xc4' && J(add.params[0].rpcUrls) === J(readNodes('0xc4')) && has(card3.card, 'X Layer (0xc4)'), J(seq.map((c) => c.method)));
+  // The user goes back to A's tab while that hub tab is still open: a message signature goes to it (one hub at
+  // a time, no popup window next to it) and brings it to the front (the user has to see the card).
   const openHub = openHubOf(a);
   await b.send('Target.activateTarget', { targetId: a.targetId });
   const onA = await until(async () => { const t = tabAt(await tabsNow(), siteUrl(SITE_A)); return t && t.active ? t : null; }, 5000);
   await clickCall(a, 'sign3', 'personal_sign', [msgHex, FAKE_ACCOUNT]);
-  const hub3 = await hubOf(a);
-  const card3 = await waitCard(hub3);
+  const hub3b = await hubOf(a);
+  await waitCard(hub3b);
   const front = tabAt(await tabsNow(), HUB);
-  check('a signature sent to the open hub tab while the user is on the site brings the hub tab to the front', !!openHub && !!onA && hub3.targetId === openHub.targetId
-    && front && front.active, J({ reused: !!openHub && hub3.targetId === openHub.targetId, onA: !!onA, front }));
-  await pressContinue(hub3);
+  check('a message signature sent while a hub tab is open goes to that tab and brings it to the front (no second hub)', !!openHub && !!onA && hub3b.targetId === openHub.targetId
+    && front && front.active && front.windowType === 'normal', J({ reused: !!openHub && hub3b.targetId === openHub.targetId, onA: !!onA, front }));
+  await pressContinue(hub3b);
   const sign3 = await result(a, 'sign3');
-  const seq = walletCalls().slice(mark).filter((c) => c.method.startsWith('wallet_') || c.method === 'personal_sign');
-  const add = seq.find((c) => c.method === 'wallet_addEthereumChain');
-  check('AC7 signing on X Layer: the wallet lacks 0xc4, TapeKit adds it with its own params, switches, then signs', sign3.result === FAKE_SIGNATURE
-    && J(seq.map((c) => c.method)) === J(['wallet_switchEthereumChain', 'wallet_addEthereumChain', 'wallet_switchEthereumChain', 'personal_sign'])
-    && add.params[0].chainId === '0xc4' && J(add.params[0].rpcUrls) === J(readNodes('0xc4')) && has(card3.card, 'X Layer'), J(seq.map((c) => c.method)));
+  check('…and is signed there', sign3.result === FAKE_SIGNATURE && signs().length === 2, J(sign3));
   await clickCall(a, 'sw8453', 'wallet_switchEthereumChain', [{ chainId: '0x2105' }]);
   await result(a, 'sw8453');
   await call(a, 'cid8453', 'eth_chainId');
   await call(a, 'g8453', 'eth_getBlockByNumber', ['0x0', false]);
   const g8453 = await result(a, 'g8453');
   check('AC7 A switches to Base: eth_chainId 0x2105 and reads go to a Base node', (await result(a, 'cid8453')).result === '0x2105' && g8453.result && g8453.result.hash === GENESIS['0x2105'], g8453.result && g8453.result.hash);
+  // D-i: A is on Base and the wallet on X Layer. A message signature is not chain-bound: a popup window, no
+  // switch. While its card is open, typed data for Base (it would need a switch) reaches that popup window's hub
+  // without a click: the hub refuses it with needs-tab instead of sending the switch OKX would fake there.
+  await waitHubClosed(a);
+  const markP = walletCalls().length;
+  await clickCall(a, 'pmsg', 'personal_sign', [msgHex, FAKE_ACCOUNT]);
+  const hubP = await hubOf(a);
+  await waitCard(hubP);
+  const winP = await windowOf(hubP, a);
+  await call(a, 'ptyped', 'eth_signTypedData_v4', [FAKE_ACCOUNT, typedData(8453)]);
+  await pressContinue(hubP);
+  const [pmsg, ptyped] = [await result(a, 'pmsg'), await result(a, 'ptyped')];
+  const afterP = walletCalls().slice(markP);
+  check('D-i personal_sign with A on Base and the wallet on X Layer: a popup window, signed with no chain switch', winP.type === 'popup' && pmsg.result === FAKE_SIGNATURE
+    && afterP.some((c) => c.method === 'personal_sign') && !afterP.some((c) => c.method.startsWith('wallet_')), J({ winP, pmsg, calls: afterP.map((c) => c.method) }));
+  check('D-i the popup window\'s hub refuses typed data that needs a chain switch: 4900 needs-tab (zh + en), no switch sent, nothing signed',
+    ptyped.error && ptyped.error.code === 4900 && ptyped.error.data.reason === 'needs-tab' && has(ptyped.error.data.messages.zh, '标签页') && has(ptyped.error.data.messages.en, 'tab')
+    && !afterP.some((c) => c.method === 'wallet_switchEthereumChain' || c.method === 'eth_signTypedData_v4'), J(ptyped));
   await clickCall(a, 'sw1', 'wallet_switchEthereumChain', [{ chainId: '0x1' }]);
   const sw1 = await result(a, 'sw1');
   await clickCall(a, 'sw56', 'wallet_switchEthereumChain', [{ chainId: '0x38' }]);
@@ -217,7 +261,7 @@ try {
   await b.send('Target.closeTarget', { targetId: hub4.targetId });
   const sign4 = await result(a, 'sign4', 10_000);
   check('R9 closing the hub rejects the pending request with 4001 (zh + en text)', sign4 && sign4.error.code === 4001 && has(sign4.error.data.messages.zh, 'TapeKit')
-    && walletCalls().filter((c) => c.method === 'personal_sign').length === 2, J(sign4));
+    && signs().length === 3, J(sign4));
 
   // ---- 6. Site B: no gesture, the site dialog, and A's grant is not B's
   const bt = await b.newTab();
@@ -242,7 +286,7 @@ try {
   check('AC3 Reject gives 4001 and B has no address', bConn.error && bConn.error.code === 4001 && J((await result(bt, 'b-acc')).result) === '[]', J(bConn));
   await clickCall(bt, 'b-sign', 'personal_sign', [msgHex, FAKE_ACCOUNT]);
   const bSign = await result(bt, 'b-sign');
-  check('AC4 A\'s grant does not work for B: signing with A\'s account gives 4100', bSign.error && bSign.error.code === 4100 && walletCalls().filter((c) => c.method === 'personal_sign').length === 2, J(bSign));
+  check('AC4 A\'s grant does not work for B: signing with A\'s account gives 4100', bSign.error && bSign.error.code === 4100 && signs().length === 3, J(bSign));
 
   // ---- 7. AC4: revoke A, then A is handled from scratch
   await waitHubClosed(a);
@@ -271,7 +315,7 @@ try {
   const nConn = await result(nt, 'n-conn');
   check('AC6 1.0.tape (not opened) is refused: 4100, status not-opened', nConn.error && nConn.error.code === 4100 && nConn.error.data && nConn.error.data.status === 'not-opened', J(nConn));
   check('AC1 the wallet "connect" was called exactly once in the whole run', connects() === 1, String(connects()));
-  check('OKX focus rule: the fake wallet refused nothing (every connect, switch and signature came from the active tab of a normal window)',
+  check('OKX focus rule: the fake wallet refused nothing (every connect and switch came from the active tab of a normal window; message signatures passed as in OKX)',
     refusedCalls().length === 0, J(refusedCalls()));
 
   // ---- 9. AC8: frames, framing the hub, other origins
@@ -316,40 +360,42 @@ try {
   check('AC8 the hub ignores a site-shaped page from another gateway: no ready, no answer, no card', J(evil) === '[]' && evilLog.cardShows === 0 && evilLog.toastShows === 0 && connects() === 1, J({ evil, evilLog }));
   await b.send('Target.closeTarget', { targetId: evilHub.targetId }).catch(() => {});
 
-  // ---- 10. Control: the fake's OKX rule is live in this run. A hub opened the old way (a popup window, as the
-  // draft client did) is refused by the wallet without a prompt, as Percy saw with the real OKX on 2026-10-16.
-  // The wallet is still on X Layer from step 4 and A is on BNB Chain: the switch is answered null and not made,
-  // and TapeKit stops with 4901 instead of signing on the wrong chain. Once A is on X Layer too, no switch is
-  // needed and the signature itself gets the fake's 4001 (stricter than OKX, which lets a plain personal_sign through).
+  // ---- 10. Control: the fake's OKX rule is live in this run. A hub opened the old way, as a popup window and
+  // without the '&window=popup' hint (a site that does not say so only hurts itself): the hub thinks it is in a
+  // tab. Typed data needs a switch (the wallet is on X Layer from step 4, A on BNB Chain); the fake answers it
+  // null and does not switch, as OKX does in a popup window, and TapeKit stops with 4901: nothing is signed.
+  // A message signature from the same popup window goes through, as OKX lets a plain personal_sign through. It
+  // carries a third param asking for a silent signature, which TapeKit drops: had it reached the wallet, the
+  // fake (like OKX) would have refused it there.
   await ev(a, `(__e2e.next = () => { const hubOrigin = ${J(`http://${HUB_HOST}`)}; window.__old = { got: [] };
     const w = window.open(${J(HUB)} + '#origin=' + encodeURIComponent(location.origin), 'old-client', 'popup,width=400,height=640');
     const send = (id, method, params) => w.postMessage({ channel: 'tapekit-wallet/1', type: 'request', id, method, params }, hubOrigin);
-    const sign = [${J(msgHex)}, ${J(FAKE_ACCOUNT)}];
     addEventListener('message', (e) => {
       if (e.source !== w || e.origin !== hubOrigin || !e.data) return;
-      if (e.data.type === 'ready') send(1, 'personal_sign', sign);
+      if (e.data.type === 'ready') send(1, 'eth_signTypedData_v4', [${J(FAKE_ACCOUNT)}, ${J(typedData(56))}]);
       if (e.data.type !== 'response') return;
       __old.got.push(e.data);
-      if (e.data.id === 1) send(2, 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
-      if (e.data.id === 2) send(3, 'personal_sign', sign);
+      if (e.data.id === 1) send(2, 'personal_sign', [${J(msgHex)}, ${J(FAKE_ACCOUNT)}, { isSilentSign: true }]);
     }); }, 1)`);
   await b.click(a.sessionId, '#__e2e_btn');
   const oldHub = await until(() => [...b.pages.values()].filter((p) => !p.closed && p.url.startsWith(HUB) && p.openerId === a.targetId).at(-1));
   await until(() => ev(oldHub, `document.readyState === 'complete' && !!window.__hubLog`));
-  const oldTab = tabAt(await tabsNow(), HUB);
+  const oldWin = await windowOf(oldHub, a);
   const oldReply = (id) => until(() => ev(a, `__old.got.find((m) => m.id === ${id}) || null`), 30_000);
+  const typedBefore = walletCalls().filter((c) => c.method === 'eth_signTypedData_v4').length;
   await waitCard(oldHub);
   await pressContinue(oldHub);
   const r1 = await oldReply(1);
-  check('control: in a popup window the fake answers the chain switch with null and does not switch; TapeKit stops with 4901, nothing is signed',
-    oldTab && oldTab.windowType === 'popup' && r1 && r1.error && r1.error.code === 4901 && J(refusedCalls().map((c) => c.method)) === J(['wallet_switchEthereumChain'])
-    && walletCalls().filter((c) => c.method === 'personal_sign').length === 2, J({ oldTab, r1, refused: refusedCalls() }));
-  await oldReply(2);
+  check('control: a popup window without the hint asks for the switch; the fake answers null and does not switch; TapeKit stops with 4901, nothing is signed',
+    oldWin.type === 'popup' && r1 && r1.error && r1.error.code === 4901 && J(refusedCalls().map((c) => c.method)) === J(['wallet_switchEthereumChain'])
+    && walletCalls().filter((c) => c.method === 'eth_signTypedData_v4').length === typedBefore, J({ oldWin, r1, refused: refusedCalls() }));
   await until(async () => (await ev(oldHub, `window.__hubLog.cardShows`)) >= 2, 30_000);
   await pressContinue(oldHub);
-  const r3 = await oldReply(3);
-  check('control: …and the signature from that popup window gets the fake\'s silent 4001 (no prompt; OKX itself lets a plain personal_sign through)', r3 && r3.error && r3.error.code === 4001 && r3.error.message === OKX_DENIED
-    && J(refusedCalls().map((c) => c.method)) === J(['wallet_switchEthereumChain', 'personal_sign']), J({ r3, refused: refusedCalls() }));
+  const r2 = await oldReply(2);
+  const last = signs().at(-1);
+  check('control: …a message signature from that popup window passes (its focus check fails, like OKX\'s); the silent-sign param never reaches the wallet',
+    r2 && r2.result === FAKE_SIGNATURE && last.focused === false && last.refused === false && J(last.params) === J([msgHex, FAKE_ACCOUNT])
+    && refusedCalls().length === 1, J({ r2, last }));
   await b.send('Target.closeTarget', { targetId: oldHub.targetId }).catch(() => {});
 
   const hubSessions = new Set([...b.pages.values()].filter((p) => p.url.startsWith(HUB)).map((p) => p.sessionId));

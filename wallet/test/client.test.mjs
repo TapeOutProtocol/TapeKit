@@ -4,7 +4,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { createPopupTransport, HUB_NAME } from '../client/transport.js';
+import { createPopupTransport, HUB_NAME, HUB_POPUP_NAME, POPUP_FEATURES } from '../client/transport.js';
 import { siteContext, installClient } from '../client/install.js';
 import { buildClient, clientConfig, CLIENT_FILE } from '../build-client.mjs';
 import { makeReady, makeResult, makeError, makeEvent, rpcError } from '../src/protocol.js';
@@ -151,10 +151,122 @@ test('without a user gesture (window.open refused) a hub request fails 4100 in b
 test('opens the hub as a tab: exact URL and name, no window features (no popup window, no noopener)', async () => {
   const h = setup();
   h.outcome(h.call('eth_requestAccounts', []));
-  // OKX refuses connect and sign calls from a popup-type window (research/manual-test.md): any features string
-  // ('popup', a width, 'noopener') would change that, so there is none at all.
+  // OKX refuses connect, transaction and chain-switch calls from a popup-type window (research/manual-test.md):
+  // any features string ('popup', a width, 'noopener') would change that, so there is none at all.
   assert.deepEqual(h.win.opened[0], [HUB_URL + '#origin=' + encodeURIComponent(SITE), HUB_NAME]);
   assert.equal(h.win.opened[0].length, 2);
+  await closeAll(h.win);
+});
+
+test('personal_sign opens the hub in a small popup window (2026-10-17): its own name, the 400×640 features, and the URL says so', async () => {
+  const h = setup();
+  h.outcome(h.call('personal_sign', ['0x68', X]));
+  assert.deepEqual(h.win.opened[0], [HUB_URL + '#origin=' + encodeURIComponent(SITE) + '&window=popup', HUB_POPUP_NAME, POPUP_FEATURES]);
+  assert.equal(POPUP_FEATURES, 'popup,width=400,height=640');
+  assert.ok(!/noopener|noreferrer/.test(POPUP_FEATURES), 'the opener is kept: the hub talks to this page through it');
+  assert.notEqual(HUB_POPUP_NAME, HUB_NAME);
+  await closeAll(h.win);
+});
+
+test('typed data, transactions, connects, chain switches and revokes still open a tab (no second click for a fallback)', async () => {
+  for (const [method, params] of [['eth_signTypedData_v4', [X, '{}']], ['eth_sendTransaction', [{ from: X }]], ['eth_requestAccounts', []],
+    ['wallet_requestPermissions', [{ eth_accounts: {} }]], ['wallet_switchEthereumChain', [{ chainId: '0xc4' }]], ['wallet_revokePermissions', [{ eth_accounts: {} }]]]) {
+    const h = setup();
+    h.outcome(h.call(method, params));
+    assert.deepEqual(h.win.opened[0], [HUB_URL + '#origin=' + encodeURIComponent(SITE), HUB_NAME], method);
+    await closeAll(h.win);
+  }
+});
+
+test('an open hub tab takes a personal_sign (brought to the front): no popup window next to it', async () => {
+  const h = setup();
+  h.outcome(h.call('eth_sendTransaction', [{ from: X }]));
+  const tab = h.win.popups[0];
+  h.win.deliver(makeReady(), { source: tab });
+  h.outcome(h.call('personal_sign', ['0x68', X]));
+  assert.equal(h.win.opened.length, 1);
+  assert.equal(tab.focused, 1);
+  assert.equal(requests(tab).at(-1).method, 'personal_sign');
+  await closeAll(h.win);
+});
+
+test('an open popup window takes chain switches, revokes and more message signatures', async () => {
+  const h = setup();
+  h.outcome(h.call('personal_sign', ['0x68', X]));
+  const popup = h.win.popups[0];
+  h.win.deliver(makeReady(), { source: popup });
+  h.outcome(h.call('wallet_switchEthereumChain', [{ chainId: '0xc4' }]));
+  h.outcome(h.call('wallet_revokePermissions', [{ eth_accounts: {} }]));
+  h.outcome(h.call('personal_sign', ['0x69', X]));
+  assert.equal(h.win.opened.length, 1);
+  assert.deepEqual(requests(popup).map((m) => m.method), ['personal_sign', 'eth_chainId', 'eth_accounts', 'wallet_switchEthereumChain', 'wallet_revokePermissions', 'personal_sign']);
+  assert.equal(popup.focused, 1, 'brought to the front for the signature only');
+  await closeAll(h.win);
+});
+
+test('an idle popup window and a request that needs a tab: a tab opens inside the same click, then the popup closes', async () => {
+  for (const [method, params] of [['eth_sendTransaction', [{ from: X }]], ['eth_signTypedData_v4', [X, '{}']], ['eth_requestAccounts', []]]) {
+    const h = setup();
+    const first = h.call('personal_sign', ['0x68', X]);
+    const popup = h.win.popups[0];
+    h.win.deliver(makeReady(), { source: popup });
+    const [sign, syncChain, syncAccounts] = requests(popup);
+    h.win.deliver(makeResult(sign.id, '0x5a'), { source: popup });
+    await first;
+    h.win.deliver(makeResult(syncChain.id, '0x38'), { source: popup });
+    h.win.deliver(makeResult(syncAccounts.id, [X]), { source: popup });
+    const p = h.call(method, params);
+    assert.deepEqual(h.win.opened.map((o) => o[1]), [HUB_POPUP_NAME, HUB_NAME], method);
+    assert.equal(popup.closed, true, 'the idle popup window is closed');
+    const tab = h.win.popups[1];
+    assert.equal(tab.posted.length, 0, 'nothing before the tab says ready');
+    h.win.deliver(makeReady(), { source: tab });
+    assert.equal(requests(tab)[0].method, method, 'the first request in the new tab: it carries the click');
+    h.win.deliver(makeResult(requests(tab)[0].id, '0x1'), { source: tab });
+    assert.equal(await p, '0x1');
+    h.win.deliver(makeResult(9999, 'late'), { source: popup });   // nothing from the closed popup is read
+    await closeAll(h.win);
+  }
+});
+
+test('the browser refuses the tab (no click): the idle popup window stays and takes the request', async () => {
+  const h = setup();
+  const first = h.call('personal_sign', ['0x68', X]);
+  const popup = h.win.popups[0];
+  h.win.deliver(makeReady(), { source: popup });
+  h.win.deliver(makeResult(requests(popup)[0].id, '0x5a'), { source: popup });
+  await first;
+  h.win.open = (...args) => { h.win.opened.push(args); return null; };   // a request without a click
+  const p = h.outcome(h.call('eth_requestAccounts', []));
+  assert.equal(popup.closed, false);
+  const req = requests(popup).at(-1);
+  assert.equal(req.method, 'eth_requestAccounts', 'sent to the popup: its hub decides (dialog, or needs-tab)');
+  h.win.deliver(makeError(req.id, rpcError(4900, 'tab', { reason: 'needs-tab', messages: { zh: 'z', en: 'e' } })), { source: popup });
+  assert.equal((await p).error.data.reason, 'needs-tab');
+  await closeAll(h.win);
+});
+
+test('a busy popup window keeps its request: a request that needs a tab goes to it (its hub answers needs-tab), no second hub', async () => {
+  const h = setup();
+  const first = h.outcome(h.call('personal_sign', ['0x68', X]));   // the card is still open
+  const popup = h.win.popups[0];
+  h.win.deliver(makeReady(), { source: popup });
+  const p = h.outcome(h.call('eth_sendTransaction', [{ from: X }]));
+  assert.equal(h.win.opened.length, 1);
+  assert.equal(popup.closed, false);
+  assert.equal(requests(popup).at(-1).method, 'eth_sendTransaction');
+  popup.closed = true;
+  assert.equal((await first).error.code, 4001);
+  assert.equal((await p).error.code, 4001);
+  await closeAll(h.win);
+});
+
+test('a popup window that never says ready is closed after the timeout (4900), like a tab', async () => {
+  const h = setup({}, { readyTimeoutMs: 30 });
+  const p = h.outcome(h.call('personal_sign', ['0x68', X]));
+  const popup = h.win.popups[0];
+  assert.equal((await p).error.data.reason, 'load');
+  assert.equal(popup.closed, true);
   await closeAll(h.win);
 });
 

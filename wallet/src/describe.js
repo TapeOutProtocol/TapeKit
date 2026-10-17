@@ -1,6 +1,8 @@
 // What the signing card shows about a request (design §7). Pure: turns the router's confirmSign card into
 // display fields; the hub UI only renders them as text (never as HTML).
-//   personal_sign         the message as text, or hex when the bytes are not UTF-8; the SIWE warning
+//   personal_sign         the message as text, or hex when the bytes are not UTF-8; the SIWE warning. No chain:
+//                         a personal message is not chain-bound, and the wallet is not switched for it
+//                         (design §10.3, 2026-10-17)
 //   eth_signTypedData_v4  domain (name, version, chain, contract), primaryType and the full JSON
 //   eth_sendTransaction   chain, recipient, value in native units, data length and 4-byte selector
 // Params were already checked by the router (params.js); this only formats.
@@ -83,7 +85,7 @@ export function describeSign(card) {
   const params = Array.isArray(card.params) ? card.params : [];
   if (card.method === 'personal_sign') {
     return {
-      kind: 'message', account: lower(params[1]), chain, ...message(params),
+      kind: 'message', account: lower(params[1]), ...message(params),
       siweWarning: card.siweWarning === true, siweDomain: card.siweWarning === true ? parseSiweDomain(params[0]) : null,
     };
   }

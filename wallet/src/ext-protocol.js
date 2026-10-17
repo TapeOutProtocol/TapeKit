@@ -41,7 +41,7 @@ function readCall(method, params) {
  * Messages for the hub (background → hub-relay → hub):
  *   { type: 'hello', managed, popup }   managed: the background opened this tab or window and will close it
  *                                        (auto-close applies); popup: it is a popup-type window, where the
- *                                        wallet's connect, sign and chain-switch calls must not be made
+ *                                        wallet's connect, transaction and chain-switch calls must not be made
  *   { type: 'request', id, origin, method, params, gesture }   origin and gesture as checked by the extension
  *   { type: 'revoke', id, origin }   the extension popup's "revoke" button
  */

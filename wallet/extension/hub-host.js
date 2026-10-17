@@ -1,16 +1,18 @@
-// Where the extension opens the hub (design §10.1, revised 2026-10-16 for OKX's focus rule). A "host" is one
-// browser tab that shows the hub page; the background keeps at most one of each kind:
-//   tab    the active tab of a normal window, next to the site's tab. OKX Wallet refuses connect, sign and
-//          chain-switch calls from a popup-type window without a prompt, and from any tab that is not the
+// Where the extension opens the hub (design §10.1, revised 2026-10-16 and 2026-10-17 for OKX's focus rule). A
+// "host" is one browser tab that shows the hub page; the background keeps at most one of each kind:
+//   tab    the active tab of a normal window, next to the site's tab. OKX Wallet refuses connect, transaction
+//          and chain-switch calls from a popup-type window without a prompt, and from any tab that is not the
 //          active tab of the last focused normal window (research/manual-test.md). So every request that may
-//          reach those calls opens here (snapshot.js needsTab), and showing the tab also focuses its window.
-//   popup  the small window for the no-click notice, chain switches and revokes, opened without focus. The hub
-//          is told it is in a popup window (`hello`), and never calls the wallet's user-facing methods there.
+//          reach those calls opens here (snapshot.js hubPlace 'tab'), and showing the tab also focuses its window.
+//   popup  the small window (400×640): focused for a message signature (hubPlace 'window'; OKX lets a plain
+//          personal_sign and typed data through from there), without focus for the no-click notice, chain
+//          switches and revokes ('notice'). The hub is told it is in a popup window (`hello`), and never makes
+//          the wallet calls OKX refuses there.
 // Host record: { kind: 'tab'|'popup', tabId, windowId, hubOrigin, returnTabId }; returnTabId is the site tab to
 // show again when an idle hub tab the user is still looking at is closed. Records are replaced, never edited.
 // Only chrome.tabs / chrome.windows calls live here; hub-link.js decides when to make them.
 
-export const NOTICE_WINDOW = Object.freeze({ type: 'popup', width: 400, height: 640 });
+export const HUB_WINDOW = Object.freeze({ type: 'popup', width: 400, height: 640 });
 
 const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isId = (v) => Number.isInteger(v) && v >= 0;
@@ -79,9 +81,9 @@ export function createHostOps(chrome) {
       return readHost({ kind: 'tab', tabId: tab.id, windowId: tab.windowId, hubOrigin, returnTabId: siteTabId });
     },
 
-    /** Open the hub in the small notice window, without focus. */
-    async openPopup(url, hubOrigin) {
-      const w = await chrome.windows.create({ ...NOTICE_WINDOW, url, focused: false });
+    /** Open the hub in the small window: focused for a card the user must answer, else without focus. */
+    async openPopup(url, hubOrigin, focused = false) {
+      const w = await chrome.windows.create({ ...HUB_WINDOW, url, focused: focused === true });
       return readHost({ kind: 'popup', tabId: w.tabs[0].id, windowId: w.id, hubOrigin, returnTabId: null });
     },
 

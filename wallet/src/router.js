@@ -14,11 +14,15 @@
 //                Events are pushed through this callback (not router.on): the channel that owns the
 //                site's port or window does the delivery.
 //   now          () → ms; onError (error, where): failures that must not fail the request (e.g. the notice)
-//   canPrompt    () → false while the hub runs in a popup-type window. Wallets such as OKX refuse their
-//                user-facing calls from there without a prompt (connect fails 4001, a chain switch answers null
-//                without switching), so the router never makes them: a request that needs the one-time wallet
-//                connection or a signature fails 4900 with data.reason 'needs-tab' before any card is shown,
-//                and the extension moves it to a hub tab. Default: always true.
+//   canPrompt    () → false while the hub runs in a popup-type window. From there OKX refuses connect, transaction
+//                and chain-switch calls without a prompt (connect and transactions fail 4001, a switch answers
+//                null without switching) but lets a plain personal_sign and eth_signTypedData_v4 through
+//                (research/manual-test.md; design §10.3, 2026-10-16 and 2026-10-17). So in a popup window the
+//                router never makes the refused calls: personal_sign runs (it is not chain-bound and never
+//                switches); typed data runs only while the wallet is already on the site's chain; a transaction,
+//                typed data on another chain and the one-time wallet connection fail 4900 with data.reason
+//                'needs-tab' before any card is shown, and the extension moves them to a hub tab.
+//                Default: always true.
 //
 // handle({ origin, method, params, gesture }) → result, or rejects with a plain { code, message, data? }.
 //   origin   must come from the browser (MessageEvent.origin / MessageSender.origin), never from the page.
@@ -39,6 +43,13 @@ const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]
 const homeChain = (site) => chainForArea(site.area);
 const cleanAccounts = (list) => (Array.isArray(list) ? [...new Set(list.filter((a) => typeof a === 'string' && ADDRESS.test(a)).map((a) => a.toLowerCase()))] : []);
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+// Signatures that depend on the wallet's chain. personal_sign (EIP-191) does not, so the wallet is never switched
+// for it (a switch is what OKX fakes outside a focused tab).
+const CHAIN_BOUND = new Set(['eth_signTypedData_v4', 'eth_sendTransaction']);
+// What reaches the wallet: exactly the params each method defines (params.js), so nothing the card did not show
+// rides along: [message, address], [address, typedData] or [tx]. For personal_sign this drops params[2]: OKX
+// reads params[2].isSilentSign, and only a plain personal_sign passes its focus rule.
+const forwarded = (method, params) => (method === 'eth_sendTransaction' ? [params[0]] : [params[0], params[1]]);
 
 function checkDeps({ hubLocation, store, identity, ui, rpc }) {
   if (!hubLocation) throw new TypeError('router: hubLocation is required');
@@ -60,10 +71,32 @@ export function createRouter(deps = {}) {
     if (!adapter || !provider) throw rpcError(ERR.DISCONNECTED);
   }
 
-  /** Before a wallet call the user must see (connect, chain switch, signature): fail here, never in silence. */
+  const needsTab = () => rpcError(ERR.DISCONNECTED, tr('en', 'err.tab'), { reason: REASON_NEEDS_TAB, messages: { zh: tr('zh', 'err.tab'), en: tr('en', 'err.tab') } });
+
+  /** Before a wallet call a popup window cannot make (the one-time connection): fail here, never in silence. */
   function requirePrompt() {
-    if (canPrompt() === true) return;
-    throw rpcError(ERR.DISCONNECTED, tr('en', 'err.tab'), { reason: REASON_NEEDS_TAB, messages: { zh: tr('zh', 'err.tab'), en: tr('en', 'err.tab') } });
+    if (canPrompt() !== true) throw needsTab();
+  }
+
+  async function walletChain() {
+    return normalizeChainId(await adapter.request(provider, { method: 'eth_chainId' }));
+  }
+
+  /**
+   * Can this signature run where the hub is? Checked before the card, so a request that moves to a tab shows
+   * its card once. In a popup window: personal_sign yes; typed data only on the site's chain; a transaction no.
+   */
+  async function requireSignHere(method, chainHex) {
+    if (canPrompt() === true || !CHAIN_BOUND.has(method)) return;
+    if (method === 'eth_signTypedData_v4' && (await walletChain()) === chainHex) return;
+    throw needsTab();
+  }
+
+  /** Right before forwarding: a chain-bound signature needs the wallet on the site's chain (design §5.3). */
+  async function onSiteChain(method, chainHex) {
+    if (!CHAIN_BOUND.has(method)) return;
+    if (canPrompt() === true) return adapter.ensureChain(provider, chainHex, chainParams(chainHex));
+    if ((await walletChain()) !== chainHex) throw needsTab();   // it moved while the card was open; never switch here
   }
 
   /** Replace the cached wallet accounts and tell each granted site whose view changed. Returns notified origins. */
@@ -225,11 +258,11 @@ export function createRouter(deps = {}) {
     if (asked !== null && asked !== chainHex) throw rpcError(ERR.CHAIN_DISCONNECTED, `The request is for chain ${asked}, but this site is on ${chainHex}.`);
     await mustBeCurrent(site, perms, address);
     const siweWarning = method === 'personal_sign' && siweMismatch(params[0], site.host);
-    requirePrompt();   // the chain switch and the signature below
+    await requireSignHere(method, chainHex);
     await confirm(() => ui.confirmSign({ origin: site.origin, identity: id, method, params, chainId: chainHex, siweWarning }));
     await mustBeCurrent(site, perms, address);   // the user may have switched accounts while the card was open
-    await adapter.ensureChain(provider, chainHex, chainParams(chainHex));
-    return adapter.request(provider, { method, params });
+    await onSiteChain(method, chainHex);
+    return adapter.request(provider, { method, params: forwarded(method, params) });
   }
 
   const QUEUED = { permission, revoke: revokeSite, chain, sign };

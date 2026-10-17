@@ -1,5 +1,6 @@
-// Hub side of the fallback channel (design §10.2): a site's client script opens the hub with window.open (as a
-// new tab since 2026-10-16: no window features, see client/transport.js) and talks to it with postMessage.
+// Hub side of the fallback channel (design §10.2): a site's client script opens the hub with window.open and
+// talks to it with postMessage. The hub opens as a new tab, except for a message signature (personal_sign),
+// which opens it in a small popup window (design §10.3, 2026-10-17; see client/transport.js).
 // Messages use the protocol.js envelope:
 //   site → hub  { channel, type: 'request', id, method, params }
 //   hub → site  { channel, type: 'response', id, result | error }   { channel, type: 'event', event, data }
@@ -46,12 +47,34 @@ export function claimFirstLoad(storage, key = FIRST_LOAD_KEY) {
   }
 }
 
+/** The hub URL's fragment as parameters ('#origin=…&window=…'), or null. */
+function hashParams(win) {
+  const hash = win && win.location && typeof win.location.hash === 'string' ? win.location.hash : '';
+  return hash.startsWith('#') ? new URLSearchParams(hash.slice(1)) : null;
+}
+
 /** The opener's origin hinted in the hub URL: '#origin=<encoded origin>'. Only a hint for the handshake. */
 function hintedOrigin(win, hubLocation) {
-  const hash = win.location && typeof win.location.hash === 'string' ? win.location.hash : '';
-  if (!hash.startsWith('#')) return null;
-  const value = new URLSearchParams(hash.slice(1)).get('origin');
+  const params = hashParams(win);
+  const value = params && params.get('origin');
   return value && parseSiteOrigin(value, hubLocation) ? value : null;
+}
+
+/**
+ * The site's client script says it opened this hub in a popup-type window: 'window=popup' next to '#origin='.
+ * The page cannot tell on its own (window.toolbar.visible reads true in a popup opened across origins, measured
+ * 2026-10-16), so the hub takes the opener's word, and its router then refuses every wallet call OKX refuses
+ * from a popup window (router canPrompt) with 'needs-tab' instead of making it.
+ * Taking the site's word is safe because the hint can only make the hub do less for that one site:
+ *   - a false 'popup' on a tab: the hub refuses calls it could have made; the site's own requests fail 4900;
+ *   - a missing hint on a popup: the hub makes the calls, as a tab would, and OKX refuses them without a prompt
+ *     (4001, or a switch answered null, which ensureChain reads back and turns into 4901). The TapeKit card,
+ *     the signer and account checks and the chain read-back run either way, so nothing is signed unseen.
+ * Read once at load: a later fragment change is not a reload and changes nothing.
+ */
+export function hintedPopupWindow(win) {
+  const params = hashParams(win);
+  return !!win.opener && !!params && params.get('window') === 'popup';
 }
 
 /**

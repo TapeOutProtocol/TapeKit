@@ -7,17 +7,20 @@
 // external, grants in localStorage (never cookies), and it never registers a Service Worker.
 //
 // Channels, both fed into the same router (`handle`) and both listed in `channels` for router events:
-//   - popup channel: a site's client script opened this page in a new tab (popup-channel.js, design §10.2);
+//   - popup channel: a site's client script opened this page in a new tab, or in a small popup window for a
+//     message signature (popup-channel.js, design §10.2 and §10.3);
 //   - extension channel: the TapeKit extension's hub-relay.js runs in this page (ext-channel.js, design §10.1).
 //     When the extension opened this tab or window itself (`hello` with managed: true), the hub auto-closes it
 //     through the extension, and it publishes a snapshot of the grants after every change so the extension can
 //     answer eth_chainId / eth_accounts while no hub is open.
 //
-// The wallet's user-facing calls (connect, chain switch, signature) are made only from a tab: OKX Wallet refuses
-// them from a popup-type window without showing anything (research/manual-test.md). The extension opens such
-// work in a tab and says in `hello` when it opened a popup window (the no-click notice); there the router's
-// canPrompt() is false and those requests fail 4900 'needs-tab', which the extension moves to a tab (design §10,
-// 2026-10-16). The client script always opens a tab.
+// OKX Wallet refuses connect, transaction and chain-switch calls from a popup-type window without showing
+// anything, but lets a plain personal_sign and eth_signTypedData_v4 through (research/manual-test.md). The hub
+// knows it is in a popup window from the extension (`hello`: the notice window, or the focused small window for
+// a message signature) or from the client script's URL hint (#window=popup, only for personal_sign). There the
+// router's canPrompt() is false: it signs messages, and typed data while the wallet is already on the site's
+// chain, and answers anything that needs a refused call 4900 'needs-tab'. The extension then moves the request
+// to a hub tab (design §10.3, 2026-10-16 and 2026-10-17); a site's script gets the error.
 import { createKernel, createIdbCache, createMemoryCache } from '/.tape/kernel/index.js';
 import { createIdentityResolver } from '/.tape/wallet/src/identity.js';
 import { createRouter } from '/.tape/wallet/src/router.js';
@@ -25,7 +28,7 @@ import { detectWallets, chooseWallet } from '/.tape/wallet/src/detect.js';
 import { ADAPTERS } from '/.tape/wallet/src/adapters/index.js';
 import { createLocalStore, readChoice, writeChoice, PERMS_KEY } from '/.tape/wallet/src/store.js';
 import { createReadRpc } from '/.tape/wallet/src/rpc.js';
-import { createPopupChannel, claimFirstLoad } from '/.tape/wallet/src/popup-channel.js';
+import { createPopupChannel, claimFirstLoad, hintedPopupWindow } from '/.tape/wallet/src/popup-channel.js';
 import { createExtChannel } from '/.tape/wallet/src/ext-channel.js';
 import { createIdleCloser } from '/.tape/wallet/src/idle.js';
 import { pickLang, tr, errorText } from '/.tape/wallet/src/i18n.js';
@@ -49,6 +52,9 @@ const openedBySite = !!window.opener;   // a site's client script opened this ta
 // Only the first load of this tab may carry the opening click (popup-channel.js): the opener can reload the hub
 // without one.
 const firstLoad = openedBySite && claimFirstLoad((() => { try { return window.sessionStorage; } catch { return null; } })());
+// The site's script opened this page in a popup window (popup-channel.js hintedPopupWindow: its word can only
+// make the hub refuse more). Read once, at load.
+const scriptPopup = hintedPopupWindow(window);
 // The auto-closer: for a tab a site opened now (window.close(); Chrome then shows the site's tab again); for a
 // tab or window the extension opened, once the extension says so (startManagedCloser).
 let closer = openedBySite ? createIdleCloser({ delayMs: CLOSE_AFTER_MS, initialHoldMs: FIRST_REQUEST_MS, close: () => window.close() }) : null;
@@ -184,7 +190,7 @@ async function bootRouter() {
     rpc: createReadRpc({ fetchImpl: (url, init) => fetch(url, init) }),
     emit,
     onError,
-    canPrompt: () => !extChannel.inPopupWindow(),
+    canPrompt: () => !scriptPopup && !extChannel.inPopupWindow(),
   });
   if (selected) {
     watchWallet(selected.provider, router);

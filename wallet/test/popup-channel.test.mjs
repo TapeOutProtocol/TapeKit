@@ -1,7 +1,7 @@
 // Offline unit tests for wallet/src/popup-channel.js: the hub side of the fallback channel (design §10.2).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPopupChannel, claimFirstLoad, FIRST_LOAD_KEY } from '../src/popup-channel.js';
+import { createPopupChannel, claimFirstLoad, hintedPopupWindow, FIRST_LOAD_KEY } from '../src/popup-channel.js';
 import { makeRequest, makeResult, makeEvent, makeReady, rpcError, CHANNEL } from '../src/protocol.js';
 
 const HUB = 'https://tapekit.org/.tape/wallet/';
@@ -195,6 +195,23 @@ test('ready is posted to the hinted origin only when it is a gateway site', () =
   }
   const lonely = setup({ opener: null, hash: '#origin=' + encodeURIComponent(A) });
   assert.equal(lonely.channel.sendReady(), false);
+});
+
+test('ready still goes out when the URL also says the hub is in a popup window (#origin=…&window=popup)', () => {
+  const h = setup({ hash: '#origin=' + encodeURIComponent(A) + '&window=popup' });
+  assert.equal(h.channel.sendReady(), true);
+  assert.deepEqual(h.posted, [{ msg: makeReady(), target: A }]);
+});
+
+test('hintedPopupWindow: only an opened hub whose URL says window=popup, exactly', () => {
+  const o = encodeURIComponent(A);
+  assert.equal(hintedPopupWindow(fakeHub({ hash: `#origin=${o}&window=popup` })), true);
+  assert.equal(hintedPopupWindow(fakeHub({ hash: `#window=popup&origin=${o}` })), true);
+  for (const hash of ['', `#origin=${o}`, `#origin=${o}&window=tab`, `#origin=${o}&window=Popup`, '#window=popup1', '?window=popup']) {
+    assert.equal(hintedPopupWindow(fakeHub({ hash })), false, hash);
+  }
+  assert.equal(hintedPopupWindow(fakeHub({ opener: null, hash: `#origin=${o}&window=popup` })), false, 'only a hub a site opened');
+  assert.equal(hintedPopupWindow({ location: {} }), false);
 });
 
 test('stop removes the listener', async () => {

@@ -210,13 +210,17 @@ function announceProvider(win, provider, info = createProviderInfo()) {
   return () => win.removeEventListener('eip6963:requestProvider', announce);
 }
 // ---- client/transport.js
-const HUB_NAME = 'tapekit-wallet';   // window.open target name; no features string, so a tab
+const HUB_NAME = 'tapekit-wallet';               // the hub tab: no features string, so a tab
+const HUB_POPUP_NAME = 'tapekit-wallet-popup';   // the small window for a message signature
+const POPUP_FEATURES = 'popup,width=400,height=640';
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const CHAIN_HEX = /^0x[0-9a-f]{1,14}$/;
 const SYNC = 'sync';   // marks the transport's own reads after `ready`; their answers never reach the site
 const cleanAccounts = (v) => (Array.isArray(v) ? v.filter((a) => typeof a === 'string' && ADDRESS.test(a)) : []);
 const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 const without = (map, key) => { const next = new Map(map); next.delete(key); return next; };
+const inPopupWindow = (method) => method === 'personal_sign';
+const needsTab = (kind, method) => kind === 'permission' || (kind === 'sign' && !inPopupWindow(method));
 function permittedAccounts(list) {
   if (!Array.isArray(list)) return [];
   const perm = list.find((p) => p && p.parentCapability === 'eth_accounts');
@@ -232,7 +236,8 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
   const lang = /^zh\b/i.test(String((win.navigator && win.navigator.language) || '')) ? 'zh' : 'en';
   const doFetch = fetchImpl || ((url, init) => win.fetch(url, init));
   const failure = (code, key) => rpcError(code, messages[key][lang], { reason: key, messages: { zh: messages[key].zh, en: messages[key].en } });
-  let hub = null;             // the hub tab this page opened
+  let hub = null;             // the hub tab or popup window this page opened
+  let hubIsPopup = false;     // `hub` is the small popup window
   let ready = false;          // the hub in `hub` has said `ready`
   let outbox = [];            // requests waiting for `ready`, oldest first
   let pending = new Map();    // id → { method, resolve, reject }  (replaced on change, never edited)
@@ -321,6 +326,7 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
     poll = null;
     stopReadyTimer();
     hub = null;
+    hubIsPopup = false;
     ready = false;
     failAll(code, key);
   }
@@ -331,25 +337,43 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
     endSession(ERR.DISCONNECTED, 'load');
     try { w.close(); } catch { /* the user can still close it */ }
   }
-  function openHub(kind) {
+  function openWindow(popup) {
+    const url = hubUrl + '#origin=' + encodeURIComponent(win.location.origin);
+    try {
+      return (popup ? win.open(url + '&window=popup', HUB_POPUP_NAME, POPUP_FEATURES) : win.open(url, HUB_NAME)) || null;
+    } catch {
+      return null;
+    }
+  }
+  function adopt(w, popup) {
+    hub = w;
+    hubIsPopup = popup;
+    ready = false;
+    poll = setInterval(() => { if (hub && hub.closed) endSession(); }, pollMs);
+    readyTimer = setTimeout(onReadyTimeout, readyTimeoutMs);
+  }
+  const idle = () => [...pending.values()].every((p) => p.method === SYNC);
+  function swapToTab() {
+    const tab = openWindow(false);
+    if (!tab) return false;
+    const old = hub;
+    endSession();
+    try { old.close(); } catch { /* it closes itself when idle */ }
+    adopt(tab, false);
+    return true;
+  }
+  function openHub(kind, method) {
     if (hub && !hub.closed) {
+      if (hubIsPopup && needsTab(kind, method) && idle() && swapToTab()) return true;
       if (kind === 'sign' || kind === 'permission') {
-        try { hub.focus(); } catch { /* the hub still answers; the user can switch to its tab */ }
+        try { hub.focus(); } catch { /* the hub still answers; the user can switch to it */ }
       }
       return true;
     }
     if (hub) endSession();
-    let w = null;
-    try {
-      w = win.open(hubUrl + '#origin=' + encodeURIComponent(win.location.origin), HUB_NAME);
-    } catch {
-      w = null;
-    }
+    const w = openWindow(inPopupWindow(method));
     if (!w) return false;
-    hub = w;
-    ready = false;
-    poll = setInterval(() => { if (hub && hub.closed) endSession(); }, pollMs);
-    readyTimer = setTimeout(onReadyTimeout, readyTimeoutMs);
+    adopt(w, inPopupWindow(method));
     return true;
   }
   function sync() {
@@ -402,7 +426,7 @@ function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, messages
     } catch {
       return Promise.reject(rpcError(ERR.INVALID_PARAMS, 'params must be plain data.'));
     }
-    if (!openHub(kind)) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
+    if (!openHub(kind, method)) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
     const id = ++seq;
     const msg = makeRequest(id, method, params);
     return new Promise((resolve, reject) => {

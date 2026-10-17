@@ -6,7 +6,8 @@
 //
 // With it the background answers eth_chainId, net_version, eth_accounts and wallet_getPermissions, and the
 // connect requests of an already-connected site, without opening anything; it picks where to open the hub (a
-// tab, or the small unfocused notice window), and the popup lists the authorized sites.
+// tab, the small window for a message signature, or the small unfocused notice window), and the popup lists the
+// authorized sites.
 // Answers use the same functions as the router (permissions.js), so they match what the hub would say.
 // Known limit (design §5.5): while no hub is open, the accounts can lag behind the wallet; the hub re-reads the
 // wallet before every signature.
@@ -86,28 +87,37 @@ export function connectedAnswer(snapshot, site, method, params) {
   return method === 'eth_requestAccounts' ? accounts : permissionList(site.origin, accounts, grantedAt(permsOf(snapshot), site.origin));
 }
 
+// Signatures OKX Wallet lets through from a popup-type window (research/manual-test.md): a plain personal_sign
+// (the router forwards exactly [message, address]) and eth_signTypedData_v4, which is not in its gated set.
+const WINDOW_SIGNS = new Set(['personal_sign', 'eth_signTypedData_v4']);
+
 /**
- * Does this request need the hub in a tab (the active tab of a normal window) rather than the small notice
- * window? OKX Wallet refuses connect, sign and chain-switch calls from a popup-type window without a prompt
- * (research/manual-test.md), so a tab is needed whenever the hub may call the wallet's user-facing methods, and
- * whenever the user has something to do in the hub:
- *   - signing (the TapeKit card, D-d; then the chain switch and the signature in the wallet);
- *   - a connect while the hub has no wallet account yet (the one-time wallet connection, R1);
- *   - a connect without a user gesture from a site that is not connected (the site dialog, D-c, which may lead
- *     to the wallet connection).
- * A connect with a gesture while the wallet account is known only shows the no-click notice: the notice
- * window, without focus. Chain switches and revokes only change TapeKit's own records (the wallet is switched
- * at signing time) and show nothing. When the snapshot is wrong (the wallet dropped the hub since), the hub
- * refuses the wallet call in the notice window (router canPrompt, 'needs-tab') and the request moves to a tab.
+ * Where the hub runs for this request (design §10.3, revised 2026-10-16 and 2026-10-17):
+ *   'tab'     the active tab of a normal window. OKX Wallet refuses connect, transaction and chain-switch calls
+ *             from a popup-type window without a prompt, so: a transaction (the card, then the chain switch and
+ *             the wallet); a connect while the hub has no wallet account yet (the one-time wallet connection,
+ *             R1); a connect without a user gesture from a site that is not connected (the site dialog, D-c,
+ *             which may lead to the wallet connection).
+ *   'window'  the small window, focused (the TapeKit card needs the user, D-d): a message signature. OKX lets
+ *             these through there. personal_sign is not chain-bound; typed data on another chain needs a switch,
+ *             so that hub answers 'needs-tab' and the request moves to a tab (hub-link.js).
+ *   'notice'  the small window without focus: a connect with a gesture while the wallet account is known (only
+ *             the no-click notice), chain switches and revokes (TapeKit's own records; the wallet is switched at
+ *             signing time). When the snapshot is wrong (the wallet dropped the hub since), the hub refuses the
+ *             wallet call there (router canPrompt, 'needs-tab') and the request moves to a tab.
+ * @returns {'tab'|'window'|'notice'}
  */
-export function needsTab(method, gesture, snapshot, origin) {
+export function hubPlace(method, gesture, snapshot, origin) {
   const kind = classify(method);
-  if (kind === 'sign') return true;
-  if (kind !== 'permission') return false;
-  if (!accountsOf(snapshot).length) return true;
-  if (accountsFor(permsOf(snapshot), origin, accountsOf(snapshot)).length) return false;
-  return gesture !== true;
+  if (kind === 'sign') return WINDOW_SIGNS.has(method) ? 'window' : 'tab';
+  if (kind !== 'permission') return 'notice';
+  if (!accountsOf(snapshot).length) return 'tab';
+  if (accountsFor(permsOf(snapshot), origin, accountsOf(snapshot)).length) return 'notice';
+  return gesture === true ? 'notice' : 'tab';
 }
+
+/** Does this request need the hub in a tab (hubPlace 'tab')? */
+export const needsTab = (method, gesture, snapshot, origin) => hubPlace(method, gesture, snapshot, origin) === 'tab';
 
 /** Authorized sites for the popup list, newest first. */
 export function grantedSites(snapshot, hubUrl) {

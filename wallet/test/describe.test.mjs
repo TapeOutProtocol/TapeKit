@@ -9,11 +9,11 @@ const A = 'https://4246-0.tapekit.org';
 const hex = (s) => '0x' + Buffer.from(s, 'utf8').toString('hex');
 const card = (method, params, extra = {}) => ({ origin: A, method, params, chainId: '0x38', siweWarning: false, ...extra });
 
-test('personal_sign: UTF-8 hex is shown as text, raw strings as they are', () => {
+test('personal_sign: UTF-8 hex is shown as text, raw strings as they are; no chain (not chain-bound, 2026-10-17)', () => {
   assert.deepEqual(describeSign(card('personal_sign', [hex('hello\nworld'), X])), {
-    kind: 'message', account: X, chain: { id: '0x38', name: 'BNB Smart Chain', symbol: 'BNB' },
-    text: 'hello\nworld', hex: null, siweWarning: false, siweDomain: null,
+    kind: 'message', account: X, text: 'hello\nworld', hex: null, siweWarning: false, siweDomain: null,
   });
+  for (const chainId of ['0x38', '0xc4', '0x2105']) assert.equal('chain' in describeSign(card('personal_sign', ['m', X], { chainId })), false, chainId);
   assert.equal(describeSign(card('personal_sign', ['plain text', X])).text, 'plain text');
 });
 
@@ -40,6 +40,7 @@ test('typed data: domain, primaryType and pretty JSON', () => {
   const d = describeSign(card('eth_signTypedData_v4', [X, JSON.stringify(data)]));
   assert.equal(d.kind, 'typed');
   assert.equal(d.account, X);
+  assert.deepEqual(d.chain, { id: '0x38', name: 'BNB Smart Chain', symbol: 'BNB' }, 'typed data is chain-bound: the card keeps the chain row');
   assert.deepEqual(d.domain, { name: 'Ether Mail', version: '1', chainId: '56', verifyingContract: Y });
   assert.equal(d.primaryType, 'Mail');
   assert.equal(d.json, JSON.stringify(data, null, 2));

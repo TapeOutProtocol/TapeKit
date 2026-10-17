@@ -122,12 +122,13 @@ export function createCards({ doc, win, lang, hubHost }) {
   }
 
   function requestBody(d, origin) {
-    const chainRow = [t('sign.chain'), `${d.chain.name} (${d.chain.id})`];
     if (d.kind === 'message') {
+      // No chain row: a personal message is not chain-bound and the wallet is not switched for it (describe.js).
       const warn = d.siweWarning ? el(doc, 'p', { class: 'warn', text: t('sign.siwe', { domain: d.siweDomain || '?', host: hostOf(origin) }) }) : null;
       const label = d.text !== null ? t('sign.message') : t('sign.hex');
-      return [warn, rows(doc, [chainRow], ''), el(doc, 'p', { class: 'hint', text: label }), el(doc, 'pre', { text: d.text !== null ? d.text : d.hex })];
+      return [warn, el(doc, 'p', { class: 'hint', text: label }), el(doc, 'pre', { text: d.text !== null ? d.text : d.hex })];
     }
+    const chainRow = [t('sign.chain'), `${d.chain.name} (${d.chain.id})`];
     if (d.kind === 'typed') {
       const dm = d.domain;
       return [

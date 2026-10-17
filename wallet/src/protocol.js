@@ -31,9 +31,10 @@ const DEFAULT_MESSAGES = Object.freeze({
 });
 
 /**
- * data.reason of the hub's 4900 "this window cannot reach the wallet". OKX Wallet refuses connect, sign and
- * chain-switch calls from a popup-type window without showing anything (research/manual-test.md), so the hub
- * never makes them there; the extension then moves the request to a hub tab (design §10, 2026-10-16).
+ * data.reason of the hub's 4900 "this window cannot reach the wallet". OKX Wallet refuses connect, transaction
+ * and chain-switch calls from a popup-type window without showing anything (research/manual-test.md), so the
+ * hub never makes them there; the extension then moves the request to a hub tab (design §10.3, 2026-10-16 and
+ * 2026-10-17).
  */
 export const REASON_NEEDS_TAB = 'needs-tab';
 

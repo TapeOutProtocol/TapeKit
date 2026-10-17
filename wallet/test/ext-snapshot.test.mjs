@@ -82,12 +82,12 @@ test('local answers: home chain without a snapshot; A\'s grant is not B\'s; acco
   assert.equal(siteChainOf({ perms: setSiteChain(perms, A, '0x2105'), accounts: [] }, site(A)), '0x2105');
 });
 
-test('a tab for the card, the one-time wallet connection and the site dialog; the gesture notice, chain switches and revokes need none', () => {
+test('a tab for a transaction, the one-time wallet connection and the site dialog; message signatures, the gesture notice, chain switches and revokes need none', () => {
   const perms = grant({}, A, [X], { chainId: '0x38', now: 1 });
   const connected = { perms, accounts: [X] };
-  assert.equal(needsTab('personal_sign', true, connected, A), true);
+  assert.equal(needsTab('personal_sign', true, connected, A), false);                      // the small window (2026-10-17)
   assert.equal(needsTab('eth_sendTransaction', false, connected, A), true);
-  assert.equal(needsTab('eth_signTypedData_v4', false, connected, A), true);
+  assert.equal(needsTab('eth_signTypedData_v4', false, connected, A), false);              // the small window; a tab if it needs a switch
   assert.equal(needsTab('eth_requestAccounts', true, null, B), true);                       // no wallet account yet
   assert.equal(needsTab('eth_requestAccounts', true, { perms, accounts: [] }, B), true);
   assert.equal(needsTab('eth_requestAccounts', false, connected, B), true);                 // site dialog

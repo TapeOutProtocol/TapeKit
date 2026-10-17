@@ -22,7 +22,7 @@ function restart(chrome, tag) {
 
 async function signing(chrome) {
   const a = site(chrome, { documentId: 'doc-1' });
-  a.ask('s1', 'personal_sign', ['0x00', X]);
+  a.ask('s1', 'eth_sendTransaction', [{ from: X, to: X }]);
   await flush();
   const opened = lastOpened(chrome);   // a hub tab
   const h = hub(chrome, opened);
@@ -144,7 +144,7 @@ test('a site port that closes while this worker runs drops its unsent requests; 
 test('a hub that never says ready: 4900 after the timeout, and its tab is closed', async () => {
   const { chrome, timers } = setup({ snapshot: SNAP });
   const a = site(chrome);
-  a.ask(1, 'personal_sign', ['0x00', X]);
+  a.ask(1, 'eth_sendTransaction', [{ from: X, to: X }]);
   await flush();
   const { tabId } = lastOpened(chrome);
   assert.equal(timers.count(), 1);

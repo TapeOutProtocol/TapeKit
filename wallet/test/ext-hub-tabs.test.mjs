@@ -1,24 +1,26 @@
 // Offline unit tests for where the extension opens the hub (hub-link.js, hub-host.js; design §10, 2026-10-16).
-// OKX Wallet refuses connect, sign and chain-switch calls from a popup-type window, and from any tab that is not
-// the active tab of the focused normal window (research/manual-test.md). So those requests open the hub as a tab
-// next to the site's tab; the no-click notice, chain switches and revokes may use the small notice window.
+// OKX Wallet refuses connect, transaction and chain-switch calls from a popup-type window, and from any tab that
+// is not the active tab of the focused normal window (research/manual-test.md). So those requests open the hub
+// as a tab next to the site's tab; the no-click notice, chain switches and revokes may use the small notice
+// window. Message signatures use a small focused window (2026-10-17): ext-hub-window.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setup, site, hub, lastOpened, flush, A, B, X, HUB_URL } from './ext-harness.mjs';
 
+const TX = [{ from: X, to: X }];   // a transaction: always a hub tab
 const granted = (origins, chainId = '0x38') => ({ perms: Object.fromEntries(origins.map((o) => [o, { accounts: [X], chainId, grantedAt: 5, holder: null, container: null }])), accounts: [X] });
 
-test('a hub tab next to the site tab for no gesture, the first wallet connection and signing; chain switches use the notice window', async () => {
+test('a hub tab next to the site tab for no gesture, the first wallet connection and transactions; chain switches use the notice window', async () => {
   const cases = [
     [{ perms: {}, accounts: [X] }, 'eth_requestAccounts', false, 'tab'],    // site dialog
     [null, 'eth_requestAccounts', true, 'tab'],                             // one-time wallet connection
-    [granted([A]), 'personal_sign', false, 'tab'],                          // the card, then the wallet
+    [granted([A]), 'eth_sendTransaction', false, 'tab'],                    // the card, then the wallet
     [granted([A]), 'wallet_switchEthereumChain', false, 'window'],          // TapeKit's own record only
   ];
   for (const [snapshot, method, gesture, how] of cases) {
     const { chrome } = setup({ snapshot });
     chrome.tabs.ensure({ id: 6, windowId: 1 });
-    site(chrome, { tabId: 7 }).ask(1, method, method === 'personal_sign' ? ['0x00', X] : [], gesture);
+    site(chrome, { tabId: 7 }).ask(1, method, method === 'eth_sendTransaction' ? TX : [], gesture);
     await flush();
     const opened = lastOpened(chrome);
     assert.equal(opened.how, how, method);
@@ -35,14 +37,14 @@ test('a site tab outside a normal window: the hub tab goes to the last focused n
   const { chrome } = setup({ snapshot: granted([A]) });
   const pop = await chrome.windows.create({ type: 'popup', url: A + '/', focused: true });
   chrome.log.opened.length = 0;
-  site(chrome, { tabId: pop.tabs[0].id, windowId: pop.id }).ask(1, 'personal_sign', ['0x00', X]);
+  site(chrome, { tabId: pop.tabs[0].id, windowId: pop.id }).ask(1, 'eth_sendTransaction', TX);
   await flush();
   assert.deepEqual(lastOpened(chrome).opts, { url: HUB_URL, active: true, windowId: 1 });
   const lone = setup({ snapshot: granted([A]) });
   await lone.chrome.windows.remove(1);
   const w = await lone.chrome.windows.create({ type: 'popup', url: A + '/', focused: true });
   lone.chrome.log.opened.length = 0;
-  site(lone.chrome, { tabId: w.tabs[0].id, windowId: w.id }).ask(1, 'personal_sign', ['0x00', X]);
+  site(lone.chrome, { tabId: w.tabs[0].id, windowId: w.id }).ask(1, 'eth_sendTransaction', TX);
   await flush();
   assert.deepEqual(lastOpened(lone.chrome).opts, { type: 'normal', url: HUB_URL, focused: true });
 });
@@ -54,23 +56,23 @@ test('a request that needs a tab never goes to the notice window; an open hub ta
   await flush();
   const notice = hub(chrome, lastOpened(chrome));
   await flush();
-  a.ask(2, 'personal_sign', ['0x00', X]);
+  a.ask(2, 'eth_sendTransaction', TX);
   await flush();
   assert.deepEqual(chrome.log.opened.map((o) => o.how), ['window', 'tab']);
   assert.deepEqual(notice.requests().map((r) => r.method), ['wallet_switchEthereumChain']);
   const tab = hub(chrome, lastOpened(chrome));
   await flush();
-  assert.deepEqual(tab.requests().map((r) => r.method), ['personal_sign']);
+  assert.deepEqual(tab.requests().map((r) => r.method), ['eth_sendTransaction']);
   notice.answer(notice.requests()[0].id, null);
   tab.answer(tab.requests()[0].id, '0xsig');   // at most 4 waiting per site
   a.ask(3, 'wallet_switchEthereumChain', [{ chainId: '0x38' }]);   // the hub tab is in front: it takes this too
   await flush();
   await chrome.tabs.update(7, { active: true });   // the user goes back to the site
   a.ask(4, 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);   // no tab needed: the notice window
-  a.ask(5, 'eth_signTypedData_v4', [X, '{}']);
+  a.ask(5, 'eth_signTypedData_v4', [X, '{}']);   // a message signature reuses the open hub tab (no second hub)
   await flush();
   assert.equal(chrome.log.opened.length, 2, 'no new host');
-  assert.deepEqual(tab.requests().map((r) => r.method), ['personal_sign', 'wallet_switchEthereumChain', 'eth_signTypedData_v4']);
+  assert.deepEqual(tab.requests().map((r) => r.method), ['eth_sendTransaction', 'wallet_switchEthereumChain', 'eth_signTypedData_v4']);
   assert.deepEqual(notice.requests().map((r) => r.method), ['wallet_switchEthereumChain', 'wallet_switchEthereumChain']);
   assert.ok(chrome.tabs.all().find((t) => t.id === lastOpened(chrome).tabId).active, 'the signature brought the hub tab back');
   tab.send({ type: 'focus' });
@@ -82,7 +84,7 @@ test('a notice goes to the hub tab only while that tab is the one shown; otherwi
   const { chrome } = setup({ snapshot: granted([A]) });
   const a = site(chrome, { tabId: 7 });
   const b = site(chrome, { origin: B, tabId: 9 });
-  a.ask(1, 'personal_sign', ['0x00', X]);
+  a.ask(1, 'eth_sendTransaction', TX);
   await flush();
   const tab = hub(chrome, lastOpened(chrome));
   await flush();
@@ -124,7 +126,7 @@ test('an idle hub tab closes; if the user is still on it, the site tab is shown 
   for (const userLeft of [false, true]) {
     const { chrome } = setup({ snapshot: granted([A]) });
     const a = site(chrome, { tabId: 7 });
-    a.ask(1, 'personal_sign', ['0x00', X]);
+    a.ask(1, 'eth_sendTransaction', TX);
     await flush();
     const opened = lastOpened(chrome);
     const h = hub(chrome, opened);
@@ -145,7 +147,7 @@ test('an idle hub tab closes; if the user is still on it, the site tab is shown 
 test('a hub tab the user took to another page is no longer a host: the next request opens a new tab, not that page', async () => {
   const { chrome } = setup({ snapshot: granted([A]) });
   const a = site(chrome, { tabId: 7 });
-  a.ask(1, 'personal_sign', ['0x00', X]);
+  a.ask(1, 'eth_sendTransaction', TX);
   await flush();
   const first = lastOpened(chrome);
   const h = hub(chrome, first);
@@ -154,12 +156,12 @@ test('a hub tab the user took to another page is no longer a host: the next requ
   h.remote.disconnect();                                                    // the hub page unloads
   await flush();
   assert.equal(a.reply(1).error.code, 4001);
-  a.ask(2, 'personal_sign', ['0x00', X]);
+  a.ask(2, 'eth_sendTransaction', TX);
   await flush();
   assert.deepEqual(chrome.log.opened.map((o) => o.how), ['tab', 'tab'], 'a new hub tab');
   const h2 = hub(chrome, lastOpened(chrome));
   await flush();
-  assert.deepEqual(h2.requests().map((r) => r.method), ['personal_sign']);
+  assert.deepEqual(h2.requests().map((r) => r.method), ['eth_sendTransaction']);
   h2.answer(h2.requests()[0].id, '0xsig');
   h2.send({ type: 'close' });
   await flush();
@@ -170,7 +172,7 @@ test('a hub tab the user took to another page is no longer a host: the next requ
 test('a hub tab taken to another page before it was ready is not closed by the ready timeout', async () => {
   const { chrome, timers } = setup({ snapshot: granted([A]) });
   const a = site(chrome);
-  a.ask(1, 'personal_sign', ['0x00', X]);
+  a.ask(1, 'eth_sendTransaction', TX);
   await flush();
   await chrome.tabs.update(lastOpened(chrome).tabId, { url: 'https://example.com/' });
   timers.fireAll();
@@ -183,7 +185,7 @@ test('a hub tab dragged to another window lives on when its first window closes'
   const { chrome } = setup({ snapshot: granted([A]) });
   const pop = await chrome.windows.create({ type: 'popup', url: A + '/', focused: true });   // the site lives on
   const a = site(chrome, { tabId: pop.tabs[0].id, windowId: pop.id });
-  a.ask(1, 'personal_sign', ['0x00', X]);
+  a.ask(1, 'eth_sendTransaction', TX);
   await flush();
   const opened = lastOpened(chrome);
   assert.equal(opened.windowId, 1);

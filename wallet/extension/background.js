@@ -9,10 +9,11 @@
 //     snapshot (snapshot.js), and so does a connect from a site that already has a visible grant; read-only
 //     calls go straight to a public node of the site's chain (rpc.js); unknown methods get 4200. None of these
 //     open a window.
-//   - Everything else goes to the hub (hub-link.js), opened or reused: as a tab next to the site's tab when the
-//     request may reach the wallet's connect, sign or chain-switch calls, else in the small notice window
-//     (snapshot.js needsTab). Each such request is kept in chrome.storage.session (pending.js) until answered,
-//     so a restarted worker still delivers it.
+//   - Everything else goes to the hub (hub-link.js), opened or reused (snapshot.js hubPlace): as a tab next to
+//     the site's tab when the request may reach the wallet's connect, transaction or chain-switch calls; in the
+//     small window, focused, for a message signature; else in the small window without focus. Each such
+//     request is kept in chrome.storage.session (pending.js) until answered, so a restarted worker still
+//     delivers it.
 //   - A site whose port closed while this worker ran (page gone or put in the back/forward cache) loses its
 //     unsent requests; when relay.js comes back and asks for them (`resume`), they fail 4900.
 // Router events from the hub go to the tabs showing that one origin (chrome.tabs.sendMessage), never others.
@@ -22,7 +23,7 @@ import { SITE_PORT, HUB_PORT, EVENT_MESSAGE, REVOKE_MESSAGE } from '../src/ext-p
 import { parseSiteOrigin } from '../src/origin.js';
 import { createReadRpc } from '../src/rpc.js';
 import { gatewayInfo, syncRouting, ROUTING_KEY } from './routing.js';
-import { SNAPSHOT_KEY, cleanSnapshot, snapshotFor, localAnswer, connectedAnswer, siteChainOf, needsTab } from './snapshot.js';
+import { SNAPSHOT_KEY, cleanSnapshot, snapshotFor, localAnswer, connectedAnswer, siteChainOf, hubPlace } from './snapshot.js';
 import { createPendingStore } from './pending.js';
 import { createHubLink } from './hub-link.js';
 
@@ -89,12 +90,12 @@ export function createWalletBackground({
 
   const hub = createHubLink({ chrome, pending, config, onReply: deliver, onEvent: sendEvent, onSnapshot: saveSnapshot, onError, setTimer, clearTimer });
 
-  async function toHub(entry, needTab, info) {
+  async function toHub(entry, place, info) {
     const waiting = pending.find((e) => e.origin === entry.origin && e.state !== 'done').length;
     if (waiting >= LIMITS.maxQueuedPerSite) throw rpcError(ERR.LIMIT_EXCEEDED, undefined, { pending: waiting });
     const hubId = newId();
     await pending.put({ ...entry, hubId, state: 'queued', hostTabId: null, reply: null });
-    await hub.enqueue(hubId, needTab, info, entry.tabId);
+    await hub.enqueue(hubId, place, info, entry.tabId);
   }
 
   async function request(port, req, gesture) {
@@ -112,7 +113,7 @@ export function createWalletBackground({
       if (connected !== null) return reply({ result: connected });
       const sender = port.sender;
       const entry = { kind: 'site', origin: site.origin, documentId: sender.documentId, tabId: sender.tab.id, siteId: req.id, method: req.method, params: req.params, gesture };
-      await toHub(entry, needsTab(req.method, gesture, snapshot, site.origin), info);
+      await toHub(entry, hubPlace(req.method, gesture, snapshot, site.origin), info);
     } catch (e) {
       if (!isRpcError(e)) onError(e, 'site.request');
       reply({ error: isRpcError(e) ? e : rpcError(ERR.INTERNAL) });
@@ -158,7 +159,7 @@ export function createWalletBackground({
     if (!site) return false;
     const hubId = newId();
     await pending.put({ kind: 'revoke', hubId, origin: site.origin, documentId: null, tabId: null, siteId: null, state: 'queued', hostTabId: null, reply: null });
-    await hub.enqueue(hubId, false, info);
+    await hub.enqueue(hubId, 'notice', info);
     return true;
   }
 

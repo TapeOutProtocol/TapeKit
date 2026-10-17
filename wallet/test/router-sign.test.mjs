@@ -104,28 +104,32 @@ test('SIWE messages for another domain carry a warning on the card', async () =>
   assert.deepEqual(h.ui.cards.map((c) => c.siweWarning), [true, true, false, false]);
 });
 
-test("the real wallet is moved to the site's chain before forwarding", async () => {
+test("the real wallet is moved to the site's chain before forwarding typed data or a transaction", async () => {
   const h = setup({ chain: '0x38' });
   await granted(h, A, B);
-  await h.call(B, 'personal_sign', [hex('x'), X]);
+  await h.call(B, 'eth_signTypedData_v4', [X, typed(196)]);
   const methods = h.wallet.calls.map((c) => c.method);
-  assert.ok(methods.indexOf('wallet_switchEthereumChain') < methods.indexOf('personal_sign'));
+  assert.ok(methods.indexOf('wallet_switchEthereumChain') < methods.indexOf('eth_signTypedData_v4'));
   assert.deepEqual(h.wallet.calls.find((c) => c.method === 'wallet_switchEthereumChain').params, [{ chainId: '0xc4' }]);
   assert.equal(h.wallet.state.chain, '0xc4');
   h.wallet.calls.length = 0;
-  await h.call(A, 'personal_sign', [hex('x'), X]);
+  await h.call(A, 'eth_sendTransaction', [{ from: X, to: X }]);
   assert.equal(h.wallet.state.chain, '0x38', 'and back for the BNB site');
+  h.wallet.calls.length = 0;
+  await h.call(B, 'personal_sign', [hex('x'), X]);
+  assert.equal(h.wallet.state.chain, '0x38', 'a message signature is not chain-bound: no switch (design §10.3, 2026-10-17)');
+  assert.equal(h.wallet.count('wallet_switchEthereumChain') + h.wallet.count('eth_chainId'), 0);
 });
 
 test('a chain the wallet lacks is added with TapeKit params, then switched to', async () => {
   const h = setup({ chain: '0x38', known: ['0x38'] });
   await granted(h, B);
-  assert.equal(await h.call(B, 'personal_sign', [hex('x'), X]), '0xsig');
+  assert.equal(await h.call(B, 'eth_signTypedData_v4', [X, typed(196)]), '0xsig');
   const add = h.wallet.calls.find((c) => c.method === 'wallet_addEthereumChain');
   assert.deepEqual(add.params, [JSON.parse(JSON.stringify(chainParams('0xc4')))]);
   const methods = h.wallet.calls.map((c) => c.method);
   assert.deepEqual(methods.slice(methods.indexOf('wallet_switchEthereumChain')), [
-    'wallet_switchEthereumChain', 'wallet_addEthereumChain', 'wallet_switchEthereumChain', 'eth_chainId', 'personal_sign',
+    'wallet_switchEthereumChain', 'wallet_addEthereumChain', 'wallet_switchEthereumChain', 'eth_chainId', 'eth_signTypedData_v4',
   ]);
 });
 

@@ -4,15 +4,18 @@
 //                        survives the hub closing and reopening, like a real wallet's connection. Every call is
 //                        reported to Node through the binding. It knows BNB Chain and Base but not X Layer, so
 //                        switching to 0xc4 needs the add flow.
-//                        It copies OKX Wallet 4.19.0's focus rule (research/manual-test.md): a method in
-//                        OKX_FOCUS_METHODS from a tab that is not the active tab of the focused normal window is
-//                        refused without any prompt: wallet_switchEthereumChain answers null and does not switch,
-//                        everything else fails 4001 with OKX's exact message. Refused calls are reported with
-//                        `refused: true`. The check runs in the fake wallet extension's background with
-//                        chrome.tabs/chrome.windows, as OKX does, so both suites load the fake as an extension
-//                        (writeFakeWalletExtension). A page cannot tell on its own: window.toolbar.visible, the
-//                        spec's popup flag, reads true in a popup opened cross-origin (site → hub), and headless
-//                        Chrome reports every tab visible and focused (measured 2026-10-16, Chrome 155).
+//                        It copies OKX Wallet 4.19.0's focus rule exactly (research/manual-test.md; its Vdn
+//                        middleware and xXa check): every request asks whether its tab is the active tab of the
+//                        focused normal window. When it is not, a method in OKX_FOCUS_METHODS is refused without
+//                        any prompt (wallet_switchEthereumChain answers null and does not switch, the rest fail
+//                        4001 with OKX's exact message), except a plain personal_sign (no params[2].isSilentSign),
+//                        which goes through; methods outside the set (eth_signTypedData_v4, eth_accounts…) are not
+//                        gated. Every call is reported with `refused` and `focused` (the check's answer). The check
+//                        runs in the fake wallet extension's background with chrome.tabs/chrome.windows, as OKX
+//                        does, so both suites load the fake as an extension (writeFakeWalletExtension). A page
+//                        cannot tell on its own: window.toolbar.visible, the spec's popup flag, reads true in a
+//                        popup opened cross-origin (site → hub), and headless Chrome reports every tab visible and
+//                        focused (measured 2026-10-16, Chrome 155).
 //   hubProbe(hubHost)    also hub-only: counts how often the confirm card and the notice become visible, so a
 //                        dialog that flashes between two polls is still seen
 //   MARKER               injected next to client.js: shows that injection reached a frame at all
@@ -20,16 +23,15 @@
 //                        button the test clicks with real CDP input (the click runs __e2e.next)
 //   writeFakeWalletExtension(dir, hubHost)  fakeWallet + hubProbe + the focus check, packed as a wallet extension;
 //                        its background also has tabsState() for the suites' tab and window checks
+//   hubWindow(…)         the window a hub page runs in (type, own window, size); typedData(chainId) for signatures
 import fs from 'node:fs';
 import path from 'node:path';
 
 export const BINDING = '__tapekitE2eWallet';
 export const FAKE_ACCOUNT = '0x' + '7e'.repeat(20);
 export const FAKE_SIGNATURE = '0x' + '5a'.repeat(65);
-// OKX Wallet 4.19.0 background.js (read 2026-10-16 from Percy's install, minified names): the set T_0 and the
-// message of its userRejectedRequest. One deliberate difference: OKX lets a personal_sign through when its
-// third param is not a silent-sign request; the fake refuses it like the rest of the set, so a signature sent
-// from the wrong window is caught too.
+// OKX Wallet 4.19.0 background.js (read 2026-10-16 from Percy's install, re-read 2026-10-17, minified names): the
+// set T_0 and the message of its userRejectedRequest.
 export const OKX_FOCUS_METHODS = Object.freeze(['wallet_switchEthereumChain', 'wallet_requestPermissions', 'eth_requestAccounts', 'wallet_requestWallets',
   'personal_sign', 'eth_signTransaction', 'eth_sendTransaction', 'eth_approveAndSwap', 'eth_signAndSendBatchTx', 'silentSign']);
 export const OKX_DENIED = 'Request Signature: User denied request signature.';
@@ -54,17 +56,21 @@ export const fakeWallet = (hubHost) => `(() => {
   const initial = { connected: false, chain: '0x38', chains: ['0x38', '0x2105'] };
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || initial; } catch { return initial; } };
   const save = (s) => localStorage.setItem(KEY, JSON.stringify(s));
-  const report = (method, params, refused = false) => { try { window.${BINDING}(JSON.stringify({ method, params, refused })); } catch {} };
+  const report = (method, params, focused, refused = false) => { try { window.${BINDING}(JSON.stringify({ method, params, refused, focused })); } catch {} };
   const FOCUS = new Set(${JSON.stringify(OKX_FOCUS_METHODS)});
-  const focused = ${EXTENSION_GATE};
+  const isFocused = ${EXTENSION_GATE};
+  // OKX's Vdn: pass when focused, when the method is not gated, or for a plain personal_sign.
+  const passes = (focused, method, params) => focused || !FOCUS.has(method)
+    || (method === 'personal_sign' && !(params && params[2] && params[2].isSilentSign));
   const provider = {
     async request({ method, params }) {
-      if (FOCUS.has(method) && !(await focused())) {
-        report(method, params, true);
+      const focused = await isFocused();   // OKX asks for every request (and remembers the window)
+      if (!passes(focused, method, params)) {
+        report(method, params, focused, true);
         if (method === 'wallet_switchEthereumChain') return null;
         throw { code: 4001, message: ${JSON.stringify(OKX_DENIED)} };
       }
-      report(method, params);
+      report(method, params, focused);
       const s = load();
       switch (method) {
         case 'eth_accounts': return s.connected ? ['${FAKE_ACCOUNT}'] : [];
@@ -134,13 +140,13 @@ const GATE_RELAY = `(() => {
   });
 })();`;
 
-// The background: OKX's focus check (its xXa), plus tabsState() for the e2e tab checks.
-//   OKX remembers the last focused window whose type is not 'popup' (IXa) each time it checks a request, and
-//   a request passes only if its tab is an active tab and, while Chrome has focus, sits in that remembered
-//   window. OKX's own provider runs in every page, so in a real browser IXa is set by the first normal page
-//   that talks to it; this fake runs only in the hub, so before its first check it falls back to the last
-//   focused normal window (chrome.windows.getLastFocused with windowTypes ['normal']). A failed check counts as
-//   focused, as in OKX.
+// The background: OKX's focus check (its xXa, copied line for line), plus tabsState() for the e2e tab checks.
+//   Each check reads the active tabs and the last focused window, and remembers that window (IXa) unless it is a
+//   'popup' (or an active tab is on link.x.immutable.com). A request passes only if its tab is an active tab
+//   and, while that window has focus, sits in the remembered window (or the last focused one before any was
+//   remembered). A failed check counts as focused, as in OKX. OKX's provider runs in every page, so a real
+//   browser remembers a normal window as soon as any site talks to it; this fake runs only in the hub, whose
+//   first wallet call in both suites comes from a hub tab.
 const TABS_STATE = `self.tabsState = async () => (await chrome.windows.getAll({ populate: true })).map((w) => ({
   id: w.id, type: w.type, focused: w.focused,
   tabs: w.tabs.map((t) => ({ id: t.id, index: t.index, active: t.active, url: t.url || t.pendingUrl || '', openerTabId: t.openerTabId ?? null })),
@@ -148,12 +154,13 @@ const TABS_STATE = `self.tabsState = async () => (await chrome.windows.getAll({ 
 const WALLET_BACKGROUND = `${TABS_STATE}
 let remembered = null;
 async function isFocusedTab(tabId) {
-  const [active, last] = await Promise.all([chrome.tabs.query({ active: true }), chrome.windows.getLastFocused()]);
-  if (last && last.type !== 'popup') remembered = last;
-  const normal = remembered || await chrome.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
-  const tab = active.find((t) => t.id === tabId);
-  if (!tab) return false;
-  return last && last.focused ? tab.windowId === (normal || last).id : true;
+  const [tabs, win] = await Promise.allSettled([chrome.tabs.query({ active: true }), chrome.windows.getLastFocused()]);
+  const active = tabs.value, last = win.value;
+  const immutable = ['link.x.immutable.com'].some((u) => active?.some((t) => t?.url?.includes(u)));
+  if (last?.type !== 'popup' || immutable) remembered = last;
+  const ref = remembered || last;
+  const tab = active?.find((t) => t?.id === tabId);
+  return tab ? (last?.focused ? tab?.windowId === ref?.id : true) : false;
 }
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   if (!msg || msg.type !== '${GATE_TAG}' || !sender.tab) return false;
@@ -169,6 +176,26 @@ export async function tabsState(b, extensionId) {
   const windows = await b.inWorker(`chrome-extension://${extensionId}/bg.js`, 'self.tabsState()', `typeof self.tabsState === 'function'`);
   return windows.flatMap((w) => w.tabs.map((t) => ({ ...t, windowId: w.id, windowType: w.type })));
 }
+
+/**
+ * Where a hub page runs, next to the site page that asked: the type of its window (chrome.windows, from the fake
+ * wallet's background), whether that is another window than the site's, and its size (CDP
+ * Browser.getWindowForTarget + Browser.getWindowBounds; CDP window ids are the chrome.windows ids).
+ * @param {object} b  startBrowser() result   @param {string} extensionId  the fake wallet's id
+ */
+export async function hubWindow(b, extensionId, hubPage, sitePage) {
+  const { windowId } = await b.send('Browser.getWindowForTarget', { targetId: hubPage.targetId });
+  const site = await b.send('Browser.getWindowForTarget', { targetId: sitePage.targetId });
+  const { bounds } = await b.send('Browser.getWindowBounds', { windowId });
+  const tab = (await tabsState(b, extensionId)).find((t) => t.windowId === windowId) || null;
+  return { type: tab ? tab.windowType : null, ownWindow: windowId !== site.windowId, width: bounds.width, height: bounds.height };
+}
+
+/** EIP-712 typed data for the e2e signatures (eth_signTypedData_v4), bound to `chainId`. */
+export const typedData = (chainId) => JSON.stringify({
+  types: { EIP712Domain: [{ name: 'name', type: 'string' }, { name: 'chainId', type: 'uint256' }], Mail: [{ name: 'contents', type: 'string' }] },
+  primaryType: 'Mail', domain: { name: 'TapeKit e2e', chainId }, message: { contents: 'hello' },
+});
 
 /**
  * The fake wallet shipped the way OKX and Binance ship theirs: a MAIN-world content script at document_start on

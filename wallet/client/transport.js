@@ -5,16 +5,25 @@
 // Rules this file keeps:
 //   - Only requests that need the hub open it. Local answers (chain, accounts), read-only calls (straight to a
 //     public node of the site's chain) and unknown methods (4200) never open a page.
-//   - The hub opens as a new tab, not a popup window: window.open with a name and no window features (design
-//     §10, 2026-10-16). OKX Wallet refuses connect, sign and chain-switch calls from a popup-type window without
-//     a prompt (research/manual-test.md). The opener is kept (never noopener): the hub talks to this page through
-//     it. The hub closes its own tab when idle; Chrome then shows the tab that opened it again.
+//   - The hub opens as a new tab: window.open with a name and no window features (design §10.3, 2026-10-16).
+//     OKX Wallet refuses connect, transaction and chain-switch calls from a popup-type window without a prompt
+//     (research/manual-test.md). The one exception is a message signature (personal_sign, 2026-10-17): OKX lets
+//     a plain personal_sign through from a popup window, and it never needs a chain switch, so it opens the hub
+//     in a small popup window under its own name, with '&window=popup' in the URL. The hub then refuses every
+//     wallet call OKX would refuse there (popup-channel.js hintedPopupWindow). Typed data stays in a tab: it may
+//     need a chain switch, and a page has no second click to move it to a tab afterwards.
+//     The opener is kept (never noopener): the hub talks to this page through it. The hub closes itself when
+//     idle; Chrome then shows the site again.
+//   - One hub at a time. An open hub tab takes every request. An open popup window takes chain switches, revokes
+//     and message signatures; for a request that needs a tab, a tab opens in the same click and the idle popup
+//     window closes. If the popup window is still busy, or the browser refuses the tab (no click), the request
+//     goes to the popup window, whose hub handles it or answers 4900 'needs-tab'.
 //   - window.open runs synchronously inside request(), so it is still inside the click that caused it. When the
 //     browser refuses (no user gesture, or popups blocked) the request fails with 4100 and asks for a click.
 //   - The hub treats only the FIRST request after its `ready` as carrying the click, so that request is the one
 //     that opened the tab. Requests made before `ready` are queued in order; the sync reads go last.
-//   - A connect or a signature sent to a hub tab that is already open brings that tab to the front (an opener
-//     may focus the window it opened): the wallet only answers the active tab, and the user has to see the card.
+//   - A connect or a signature sent to a hub that is already open brings it to the front (an opener may focus
+//     the window it opened): the wallet only answers the active tab, and the user has to see the card.
 //   - Strict postMessage: sends go to the exact hub origin, and only messages whose source is the hub this
 //     page opened and whose origin is the hub origin are read.
 //   - When the hub closes (polled: there is no close event across origins), every pending request fails 4001.
@@ -23,7 +32,9 @@
 //     sent to it yet, so closing it cannot drop a request the wallet is working on.
 import { ERR, LIMITS, classify, rpcError, paramsSize, makeRequest, readEnvelope } from '../src/protocol.js';
 
-export const HUB_NAME = 'tapekit-wallet';   // window.open target name; no features string, so a tab
+export const HUB_NAME = 'tapekit-wallet';               // the hub tab: no features string, so a tab
+export const HUB_POPUP_NAME = 'tapekit-wallet-popup';   // the small window for a message signature
+export const POPUP_FEATURES = 'popup,width=400,height=640';
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const CHAIN_HEX = /^0x[0-9a-f]{1,14}$/;
@@ -32,6 +43,9 @@ const SYNC = 'sync';   // marks the transport's own reads after `ready`; their a
 const cleanAccounts = (v) => (Array.isArray(v) ? v.filter((a) => typeof a === 'string' && ADDRESS.test(a)) : []);
 const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 const without = (map, key) => { const next = new Map(map); next.delete(key); return next; };
+// Only a message signature opens the small window; what else a popup-window hub would refuse needs a tab.
+const inPopupWindow = (method) => method === 'personal_sign';
+const needsTab = (kind, method) => kind === 'permission' || (kind === 'sign' && !inPopupWindow(method));
 
 /** Accounts granted in an EIP-2255 permission list (wallet_requestPermissions result). */
 function permittedAccounts(list) {
@@ -57,7 +71,8 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
   const doFetch = fetchImpl || ((url, init) => win.fetch(url, init));
   const failure = (code, key) => rpcError(code, messages[key][lang], { reason: key, messages: { zh: messages[key].zh, en: messages[key].en } });
 
-  let hub = null;             // the hub tab this page opened
+  let hub = null;             // the hub tab or popup window this page opened
+  let hubIsPopup = false;     // `hub` is the small popup window
   let ready = false;          // the hub in `hub` has said `ready`
   let outbox = [];            // requests waiting for `ready`, oldest first
   let pending = new Map();    // id → { method, resolve, reject }  (replaced on change, never edited)
@@ -159,6 +174,7 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
     poll = null;
     stopReadyTimer();
     hub = null;
+    hubIsPopup = false;
     ready = false;
     failAll(code, key);
   }
@@ -171,29 +187,55 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
     try { w.close(); } catch { /* the user can still close it */ }
   }
 
+  /** window.open for the hub: a tab, or the small popup window. Null when the browser refuses. */
+  function openWindow(popup) {
+    const url = hubUrl + '#origin=' + encodeURIComponent(win.location.origin);
+    try {
+      return (popup ? win.open(url + '&window=popup', HUB_POPUP_NAME, POPUP_FEATURES) : win.open(url, HUB_NAME)) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function adopt(w, popup) {
+    hub = w;
+    hubIsPopup = popup;
+    ready = false;
+    poll = setInterval(() => { if (hub && hub.closed) endSession(); }, pollMs);
+    readyTimer = setTimeout(onReadyTimeout, readyTimeoutMs);
+  }
+
+  /** The open popup window has nothing of the site's in hand (its own sync reads aside). */
+  const idle = () => [...pending.values()].every((p) => p.method === SYNC);
+
+  /** The idle popup window cannot do this request: open a tab in this click, then close the popup. */
+  function swapToTab() {
+    const tab = openWindow(false);
+    if (!tab) return false;
+    const old = hub;
+    endSession();
+    try { old.close(); } catch { /* it closes itself when idle */ }
+    adopt(tab, false);
+    return true;
+  }
+
   /**
-   * Reuse the open hub (brought to the front when the user has something to do there), or open it now as a
-   * new tab, inside the caller's click. False when the browser refuses.
+   * Reuse the open hub (brought to the front when the user has something to do there), or open it now inside
+   * the caller's click: as the small popup window for a message signature, else as a new tab. False when the
+   * browser refuses.
    */
-  function openHub(kind) {
+  function openHub(kind, method) {
     if (hub && !hub.closed) {
+      if (hubIsPopup && needsTab(kind, method) && idle() && swapToTab()) return true;
       if (kind === 'sign' || kind === 'permission') {
-        try { hub.focus(); } catch { /* the hub still answers; the user can switch to its tab */ }
+        try { hub.focus(); } catch { /* the hub still answers; the user can switch to it */ }
       }
       return true;
     }
     if (hub) endSession();
-    let w = null;
-    try {
-      w = win.open(hubUrl + '#origin=' + encodeURIComponent(win.location.origin), HUB_NAME);
-    } catch {
-      w = null;
-    }
+    const w = openWindow(inPopupWindow(method));
     if (!w) return false;
-    hub = w;
-    ready = false;
-    poll = setInterval(() => { if (hub && hub.closed) endSession(); }, pollMs);
-    readyTimer = setTimeout(onReadyTimeout, readyTimeoutMs);
+    adopt(w, inPopupWindow(method));
     return true;
   }
 
@@ -254,7 +296,7 @@ export function createPopupTransport({ win, hubUrl, hubOrigin, chainId, nodes, m
     } catch {
       return Promise.reject(rpcError(ERR.INVALID_PARAMS, 'params must be plain data.'));
     }
-    if (!openHub(kind)) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
+    if (!openHub(kind, method)) return Promise.reject(failure(ERR.UNAUTHORIZED, 'popup'));
     const id = ++seq;
     const msg = makeRequest(id, method, params);
     return new Promise((resolve, reject) => {

@@ -1,14 +1,17 @@
 // Background side of the hub (design §10.1, revised 2026-10-16): open or reuse the hub on the gateway root,
 // hand it the queued requests once its hub-relay.js says `ready`, and settle what it answers.
 //
-//   - Where the hub runs (hub-host.js): a request that may reach the wallet's connect, sign or chain-switch calls
-//     opens it as the active tab of a normal window, next to the site's tab; OKX Wallet refuses those calls from
-//     a popup-type window without a prompt (research/manual-test.md). The no-click notice, chain switches and
-//     revokes use the small notice window, opened without focus. An open hub tab takes every request that needs
-//     a tab, and the others while it is the active tab (a notice in a background tab would go unseen); an open
-//     notice window takes only the ones that need no tab. At most one host of each kind.
-//   - Safety net: the hub in the notice window refuses a wallet call it turns out to need (the snapshot was
-//     behind: the wallet dropped the hub) with 4900 'needs-tab'. Such a request moves to a hub tab, once.
+//   - Where the hub runs (hub-host.js, snapshot.js hubPlace): a request that may reach the wallet's connect,
+//     transaction or chain-switch calls ('tab') opens it as the active tab of a normal window, next to the site's
+//     tab; OKX Wallet refuses those calls from a popup-type window without a prompt (research/manual-test.md). A
+//     message signature ('window') opens the small window with focus: OKX lets a plain personal_sign and typed
+//     data through from there. The no-click notice, chain switches and revokes ('notice') use the small window
+//     without focus. An open hub tab takes every 'tab' and 'window' request (brought to the front, so there is
+//     never a second hub for a card), and 'notice' ones while it is the active tab (a notice in a background tab
+//     would go unseen); an open small window takes 'window' and 'notice' ones. At most one host of each kind.
+//   - Safety net: the hub in the small window refuses a wallet call it turns out to need (typed data on another
+//     chain; or the snapshot was behind: the wallet dropped the hub) with 4900 'needs-tab'. Such a request moves
+//     to a hub tab, once.
 //   - `hello` tells the hub whether this worker opened it (managed) and whether its window is a popup, from
 //     chrome.windows: the page cannot tell (window.toolbar.visible reads true in an extension's popup window).
 //   - Only the hub page of the configured gateway counts: top frame, exact origin (port included), path
@@ -40,6 +43,7 @@ const hostOf = (hosts, tabId) => [hosts.tab, hosts.popup].find((h) => h && h.tab
 const withoutHost = (hosts, host) => ({ tab: hosts.tab === host ? null : hosts.tab, popup: hosts.popup === host ? null : hosts.popup });
 const withKey = (map, key, value) => new Map(map).set(key, value);
 const withoutKey = (map, key) => { const next = new Map(map); next.delete(key); return next; };
+const PLACES = new Set(['tab', 'window', 'notice']);
 
 /** The sender is the hub page of this gateway, in a tab's top frame. */
 export function isHubSender(sender, info) {
@@ -113,7 +117,7 @@ export function createHubLink({ chrome, pending, config, onReply, onEvent, onSna
     return host && host.hubOrigin === info.hubOrigin && await ops.hubTab(host) ? host : null;
   }
 
-  async function ensureNow(needTab, siteTabId, info) {
+  async function ensureNow(place, siteTabId, info) {
     const stored = await readHosts();
     const hosts = { tab: await live(stored.tab, info), popup: await live(stored.popup, info) };
     // A stored host that is gone (closed while no worker listened, taken to another page by the user, or of an
@@ -125,14 +129,15 @@ export function createHubLink({ chrome, pending, config, onReply, onEvent, onSna
       rejectBound(old.tabId, ['queued', 'sent'], closedError());
     }
     if (gone.length) await writeHosts(hosts);
-    if (hosts.tab && (needTab || await ops.isActiveTab(hosts.tab.tabId))) {
+    const forUser = place !== 'notice';   // a card or the wallet: the user must see the hub
+    if (hosts.tab && (forUser || await ops.isActiveTab(hosts.tab.tabId))) {
       const host = Number.isInteger(siteTabId) ? readHost({ ...hosts.tab, returnTabId: siteTabId }) : hosts.tab;
       await writeHosts({ ...hosts, tab: host });
-      if (needTab) await ops.showTab(host.tabId);
+      if (forUser) await ops.showTab(host.tabId);
       return host.tabId;
     }
-    if (!needTab && hosts.popup) return hosts.popup.tabId;
-    const host = needTab ? await ops.openTab(info.hubUrl, siteTabId, info.hubOrigin) : await ops.openPopup(info.hubUrl, info.hubOrigin);
+    if (place !== 'tab' && hosts.popup) return hosts.popup.tabId;   // its hub asks for focus before a card
+    const host = place === 'tab' ? await ops.openTab(info.hubUrl, siteTabId, info.hubOrigin) : await ops.openPopup(info.hubUrl, info.hubOrigin, place === 'window');
     await writeHosts({ ...hosts, [host.kind]: host });
     armReadyTimer(host.tabId);
     return host.tabId;
@@ -158,13 +163,13 @@ export function createHubLink({ chrome, pending, config, onReply, onEvent, onSna
 
   /**
    * Queue `hubId` (already in `pending`) for the hub, opening or reusing a host.
-   * @param {boolean} needTab  snapshot.js needsTab: the request may reach the wallet's user-facing calls
+   * @param {'tab'|'window'|'notice'} place  snapshot.js hubPlace; anything else counts as 'notice'
    * @param {number|null} siteTabId  the requesting site's tab (where a new hub tab goes, and returns to)
    */
-  async function enqueue(hubId, needTab, info, siteTabId = null) {
+  async function enqueue(hubId, place, info, siteTabId = null) {
     let tabId;
     try {
-      tabId = await serial(() => ensureNow(needTab === true, siteTabId, info));
+      tabId = await serial(() => ensureNow(PLACES.has(place) ? place : 'notice', siteTabId, info));
     } catch (e) {
       onError(e, 'hub.open');
       const entry = pending.get(hubId);
@@ -182,10 +187,10 @@ export function createHubLink({ chrome, pending, config, onReply, onEvent, onSna
     if (host) await ops.close(host);
   }
 
-  /** The notice window's hub needed the wallet after all: run the request again in a hub tab (once). */
+  /** The small window's hub needed a tab after all: run the request again in a hub tab (once). */
   async function moveToTab(entry, info) {
     await pending.update(entry.hubId, { state: 'queued', hostTabId: null, moved: true });
-    await enqueue(entry.hubId, true, info, entry.tabId);
+    await enqueue(entry.hubId, 'tab', info, entry.tabId);
   }
 
   async function onResponse(msg, host, info) {
