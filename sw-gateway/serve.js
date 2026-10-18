@@ -22,12 +22,16 @@ export const OPEN_SUFFIX = '-open';
  * The wallet hub's path (hub-route.js) is reserved on every host but the gateway root: neither tier serves a
  * site's own file there (sw.js, worker.js), only a script-free notice. A site could otherwise put a look-alike hub
  * at https://<site>.<gateway>/.tape/wallet/, one label away from the address users are taught to trust (audit
- * 2026-10-18 issue 6). Checked on the decoded path, any case, with or without the trailing slash.
+ * 2026-10-18 issue 6). The path is normalized the way the kernel looks files up (kernel/src/path.js
+ * normalizePath: cut at ? or #, decode, NFC, repeated slashes merged), so every spelling that would reach a
+ * site file under .tape/wallet/ is caught, //.tape/wallet/ and /.tape//wallet/ included (cross-audit
+ * 2026-10-18); then any case, with or without the trailing slash. Copied, not imported: this file imports nothing.
  */
 const RESERVED_SITE_PATH = /^\/\.tape\/wallet(\/|$)/i;
 export function isReservedSitePath(pathname) {
-  let p = String(pathname);
-  try { p = decodeURIComponent(p); } catch { /* a broken %xx: test it as it is */ }
+  let p = String(pathname).split(/[?#]/)[0];
+  try { p = decodeURIComponent(p); } catch { /* a broken %xx: test it as it is (the kernel serves nothing for it) */ }
+  p = p.normalize('NFC').replace(/\/+/g, '/');
   return RESERVED_SITE_PATH.test(p);
 }
 /** The real hub for a request on a site host: the same scheme and port, the site label (and a trailing dot) dropped. */

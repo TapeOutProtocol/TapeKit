@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import worker from '../worker.js';
 import { HUB_CSP } from '../hub-route.js';
 import { DOC_CSP, isReservedSitePath } from '../serve.js';
+import { normalizePath } from '../../kernel/src/path.js';
 
 const SANDBOX = "default-src 'none'; sandbox";
 const FILES = {
@@ -81,7 +82,8 @@ test('site subdomains never get the hub, nor anything else at its path: a script
   // would have installed the Service Worker, which then served it (sw.js checks the same rule).
   const hosts = ['https://4246-0.tapekit.org', 'https://1-2-344.tapekit.org', 'https://01-0.tapekit.org', 'https://4246-0-open.tapekit.org', 'https://tapekit.org.', 'https://4246-0.tapekit.org.', 'http://4246-0.localhost:8096'];
   for (const host of hosts) {
-    for (const path of ['/.tape/wallet/', '/.tape/wallet', '/.tape/wallet/index.html', '/.tape/wallet/hub.js', '/.tape/wallet/src/router.js', '/.tape/WALLET/', '/.tape/%77allet/', '/.tape/wallet%2Findex.html']) {
+    for (const path of ['/.tape/wallet/', '/.tape/wallet', '/.tape/wallet/index.html', '/.tape/wallet/hub.js', '/.tape/wallet/src/router.js', '/.tape/WALLET/', '/.tape/%77allet/', '/.tape/wallet%2Findex.html',
+      '//.tape/wallet/', '/.tape//wallet/', '/%2F.tape/wallet/', '/.tape%2F%2Fwallet/']) {
       const r = await get(host + path);
       assert.equal(r.status, 404, host + path);
       assert.equal(r.csp, DOC_CSP, host + path);
@@ -94,6 +96,16 @@ test('site subdomains never get the hub, nor anything else at its path: a script
   assert.match(named.body, /https:\/\/tapekit\.org\/\.tape\/wallet\//);
   const dev = await get('http://4246-0.localhost:8096/.tape/wallet/');
   assert.match(dev.body, /http:\/\/localhost:8096\/\.tape\/wallet\//);
+});
+
+test('isReservedSitePath matches every request path the kernel would map into .tape/wallet/ (cross-audit 2026-10-18: repeated slashes)', () => {
+  const variants = ['/.tape/wallet/', '//.tape/wallet/', '/.tape//wallet/', '/%2F.tape/wallet/', '/.tape%2F%2Fwallet/', '///.tape///wallet///x.js', '/.tape/wallet',
+    '/.tape/wallet%2F', '/.tape/wallet/%2Fx', '/.tape/walletx/', '/.tape/wallet%3Fx', '/.tape/wallet.html', '/a//.tape/wallet/', '/', '/.tape/status'];
+  for (const v of variants) {
+    const k = normalizePath(v);
+    const kernelReaches = k !== null && (k === '.tape/wallet' || k.startsWith('.tape/wallet/'));
+    assert.equal(isReservedSitePath(v), kernelReaches, `${v} → kernel ${k}`);
+  }
 });
 
 test('isReservedSitePath: the hub path in any spelling a browser or a server may map to it', () => {
