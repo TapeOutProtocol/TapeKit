@@ -46,10 +46,12 @@ const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 // Signatures that depend on the wallet's chain. personal_sign (EIP-191) does not, so the wallet is never switched
 // for it (a switch is what OKX fakes outside a focused tab).
 const CHAIN_BOUND = new Set(['eth_signTypedData_v4', 'eth_sendTransaction']);
-// What reaches the wallet: exactly the params each method defines (params.js), so nothing the card did not show
-// rides along: [message, address], [address, typedData] or [tx]. For personal_sign this drops params[2]: OKX
-// reads params[2].isSilentSign, and only a plain personal_sign passes its focus rule.
-const forwarded = (method, params) => (method === 'eth_sendTransaction' ? [params[0]] : [params[0], params[1]]);
+// What the card shows and the wallet gets: one copy, built by params.js from exactly the params each method
+// defines, so nothing the card did not show rides along: [message, address], [address, typedData] or [tx], where
+// tx is rebuilt from an allow-list (from, to, value, data) plus the site's chainId, so a wallet on another chain
+// refuses it. For personal_sign this drops params[2]: OKX reads params[2].isSilentSign, and only a plain
+// personal_sign passes its focus rule.
+const shownParams = (method, clean, chainHex) => (method === 'eth_sendTransaction' ? [Object.freeze({ ...clean[0], chainId: chainHex })] : clean);
 
 function checkDeps({ hubLocation, store, identity, ui, rpc }) {
   if (!hubLocation) throw new TypeError('router: hubLocation is required');
@@ -252,17 +254,18 @@ export function createRouter(deps = {}) {
     requireWallet();
     const perms = await store.get();
     if (!isGranted(perms, site.origin)) throw rpcError(ERR.UNAUTHORIZED, 'This site is not connected.');
-    const { address, chainId: asked } = readSignRequest(method, params);
+    const { address, chainId: asked, params: clean } = readSignRequest(method, params);
     if (!accountsFor(perms, site.origin, [address]).length) throw rpcError(ERR.UNAUTHORIZED, 'This address is not connected to this site.');
     const chainHex = siteChain(perms, site.origin, homeChain(site));
     if (asked !== null && asked !== chainHex) throw rpcError(ERR.CHAIN_DISCONNECTED, `The request is for chain ${asked}, but this site is on ${chainHex}.`);
     await mustBeCurrent(site, perms, address);
-    const siweWarning = method === 'personal_sign' && siweMismatch(params[0], site.host);
+    const shown = shownParams(method, clean, chainHex);
+    const siweWarning = method === 'personal_sign' && siweMismatch(shown[0], site.host);
     await requireSignHere(method, chainHex);
-    await confirm(() => ui.confirmSign({ origin: site.origin, identity: id, method, params, chainId: chainHex, siweWarning }));
+    await confirm(() => ui.confirmSign({ origin: site.origin, identity: id, method, params: shown, chainId: chainHex, siweWarning }));
     await mustBeCurrent(site, perms, address);   // the user may have switched accounts while the card was open
     await onSiteChain(method, chainHex);
-    return adapter.request(provider, { method, params: forwarded(method, params) });
+    return adapter.request(provider, { method, params: shown });
   }
 
   const QUEUED = { permission, revoke: revokeSite, chain, sign };

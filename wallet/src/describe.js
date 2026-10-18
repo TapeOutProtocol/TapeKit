@@ -66,7 +66,7 @@ function typed(params) {
 function transaction(tx, chain) {
   const amount = quantity(tx.value);
   const value = amount === null ? `${String(tx.value).slice(0, 100)} (?)` : `${formatUnits(amount, 18)} ${chain.symbol}`.trim();
-  const data = tx.data !== undefined ? tx.data : tx.input;
+  const data = tx.data;   // the rebuilt transaction (params.js) carries the call data as `data` only
   const okData = data === undefined || data === null || (typeof data === 'string' && HEX_BYTES.test(data));
   const bytes = !okData ? null : typeof data === 'string' ? (data.length - 2) / 2 : 0;
   return {

@@ -3,7 +3,8 @@
 //                        (connected, current chain, known chains) lives in the hub origin's localStorage, so it
 //                        survives the hub closing and reopening, like a real wallet's connection. Every call is
 //                        reported to Node through the binding. It knows BNB Chain and Base but not X Layer, so
-//                        switching to 0xc4 needs the add flow.
+//                        switching to 0xc4 needs the add flow. eth_sendTransaction only reports its params and
+//                        answers a fixed hash.
 //                        It copies OKX Wallet 4.19.0's focus rule exactly (research/manual-test.md; its Vdn
 //                        middleware and xXa check): every request asks whether its tab is the active tab of the
 //                        focused normal window. When it is not, a method in OKX_FOCUS_METHODS is refused without
@@ -32,6 +33,7 @@ import path from 'node:path';
 export const BINDING = '__tapekitE2eWallet';
 export const FAKE_ACCOUNT = '0x' + '7e'.repeat(20);
 export const FAKE_SIGNATURE = '0x' + '5a'.repeat(65);
+export const FAKE_TX_HASH = '0x' + '7a'.repeat(32);
 // OKX Wallet 4.19.0 background.js (read 2026-10-16 from Percy's install, re-read 2026-10-17, minified names): the
 // set T_0 and the message of its userRejectedRequest.
 export const OKX_FOCUS_METHODS = Object.freeze(['wallet_switchEthereumChain', 'wallet_requestPermissions', 'eth_requestAccounts', 'wallet_requestWallets',
@@ -86,6 +88,8 @@ export const fakeWallet = (hubHost) => `(() => {
         }
         case 'wallet_addEthereumChain': save({ ...s, chains: [...new Set([...s.chains, params[0].chainId])] }); return null;
         case 'personal_sign': case 'eth_signTypedData_v4': return '${FAKE_SIGNATURE}';
+        // Never sends anything: the test compares the reported params with what the TapeKit card showed.
+        case 'eth_sendTransaction': return '${FAKE_TX_HASH}';
         default: throw { code: 4200, message: 'fake wallet: unsupported ' + method };
       }
     },
@@ -191,6 +195,21 @@ export async function hubWindow(b, extensionId, hubPage, sitePage) {
   const { bounds } = await b.send('Browser.getWindowBounds', { windowId });
   const tab = (await tabsState(b, extensionId)).find((t) => t.windowId === windowId) || null;
   return { type: tab ? tab.windowType : null, ownWindow: windowId !== site.windowId, width: bounds.width, height: bounds.height };
+}
+
+/**
+ * A token transfer sent the way that fooled the card before the allow-list (audit 2026-10-18 issue 2): `data: null`
+ * and the call in `input` (OKX Wallet uses `input` when `data` is falsy), plus fields the card never showed. The
+ * wallet must get `expected`: the same bytes as `data`, the site's chainId, nothing else.
+ */
+export function hiddenCallTx(chainId) {
+  const token = '0x55d398326f99059ff775485246999027b3197955';   // USDT on BNB Chain (only a recipient here)
+  const call = '0xa9059cbb' + '00'.repeat(12) + 'ee'.repeat(20) + (10n ** 21n).toString(16).padStart(64, '0');
+  return {
+    sent: { from: FAKE_ACCOUNT, to: token, value: '0x0', data: null, input: call, gas: '0x5208', type: '0x2', nonce: '0x0' },
+    expected: { from: FAKE_ACCOUNT, to: token, value: '0x0', data: call, chainId },
+    token, selector: '0xa9059cbb', bytes: (call.length - 2) / 2,
+  };
 }
 
 /** A 10-line EIP-4361 sign-in message for `domain` (the audit's example: app.uniswap.org). */

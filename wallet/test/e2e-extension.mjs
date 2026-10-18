@@ -24,7 +24,7 @@ import { ROUTING_KEY } from '../extension/routing.js';
 import { SNAPSHOT_KEY } from '../extension/snapshot.js';
 import { startBrowser, until, sleep } from './e2e-cdp.mjs';
 import { runEnableChecks } from './e2e-extension-enable.mjs';
-import { writeFakeWalletExtension, tabsState, hubWindow, typedData, siweFor, permitData, cardOnScreen, CARD_LAYOUT, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE } from './e2e-pages.mjs';
+import { writeFakeWalletExtension, tabsState, hubWindow, typedData, siweFor, permitData, cardOnScreen, CARD_LAYOUT, hiddenCallTx, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE, FAKE_TX_HASH } from './e2e-pages.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SITE_A = { name: '433.0.tape', label: '433-0' };
@@ -238,6 +238,22 @@ try {
   check('issue 1: a Permit card at 1280×650: title and identity rows on screen; no header, no site list',
     cardOnScreen(permitCard.layout, [1280, 650], false) && permitCard.rejected && walletCalls('personal_sign') === 1 && walletCalls('eth_signTypedData_v4') === 0, J(permitCard));
 
+  // ---- 3b. A transaction (audit 2026-10-18 issues 2 and 7): the card shows the call hidden in `input`, and the
+  // wallet gets exactly the rebuilt transaction the card showed, from a hub tab (OKX gates transactions).
+  const txCase = hiddenCallTx('0x38');
+  await clickCall(a, 'tx1', 'eth_sendTransaction', [txCase.sent]);
+  const hubTx = await hubOf();
+  const txCard = await waitCard(hubTx);
+  const txWin = await windowOf(hubTx, a);
+  await pressContinue(hubTx);
+  const tx1 = await result(a, 'tx1');
+  const sentTx = calls().filter((c) => c.method === 'eth_sendTransaction');
+  check('issue 2: the transaction card shows the call hidden in input (68 bytes, selector, recipient) in a hub tab, not a popup window',
+    txCard && has(txCard.card, txCase.token, txCase.selector, String(txCase.bytes), 'BNB Smart Chain (0x38)') && txWin.type === 'normal', J({ card: txCard && txCard.card.slice(0, 400), txWin }));
+  check('issue 2: after Continue the wallet gets exactly the rebuilt transaction the card showed (data, the site\'s chainId; no input, gas, type or nonce), from a focused tab; the site gets the hash',
+    tx1.result === FAKE_TX_HASH && sentTx.length === 1 && J(sentTx[0].params) === J([txCase.expected]) && sentTx[0].focused === true && sentTx[0].refused === false, J({ tx1, sentTx }));
+  await waitNoHub();
+  await backOn(SITE_A);
 
   // ---- 3b. AC7: a chain switch goes through the hub (no focus); chainChanged reaches A; the snapshot has the chain
   await call(a, 'sw1', 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);

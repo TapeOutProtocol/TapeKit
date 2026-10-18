@@ -58,6 +58,27 @@ test('typed data or a transaction for another chain gives 4901', async () => {
   assert.equal(await h.call(A, 'eth_signTypedData_v4', [X, typed('0xc4')]), '0xsig');
 });
 
+test('a transaction: the card shows the rebuilt tx, and the wallet gets that same object with the site\'s chainId', async () => {
+  const h = setup();
+  await granted(h, A);
+  const call = '0xa9059cbb' + '00'.repeat(64);
+  assert.equal(await h.call(A, 'eth_sendTransaction', [{ from: X, to: Y, value: '0x0', data: null, input: call, gas: '0x1', nonce: '0x9', type: '0x2' }]), '0xsig');
+  const shown = h.ui.cards[0].params;
+  const sent = h.wallet.calls.find((c) => c.method === 'eth_sendTransaction').params;
+  assert.deepEqual(shown, [{ from: X, to: Y, value: '0x0', data: call, chainId: '0x38' }]);
+  assert.deepEqual(sent, shown, 'forwarded exactly what the card showed: no input, gas, nonce or type');
+});
+
+test('a transaction whose data and input differ, or with an EIP-7702 authorization, is refused before any card', async () => {
+  const h = setup();
+  await granted(h, A);
+  await rejectsWith(h.call(A, 'eth_sendTransaction', [{ from: X, to: Y, data: '0x', input: '0xa9059cbb' }]), -32602);
+  await rejectsWith(h.call(A, 'eth_sendTransaction', [{ from: X, to: Y, authorizationList: [{ address: Y }] }]), -32602);
+  await rejectsWith(h.call(A, 'eth_sendTransaction', [{ from: X, to: Y, type: '0x4' }]), -32602);
+  assert.equal(h.ui.cards.length, 0);
+  assert.equal(h.wallet.count('eth_sendTransaction'), 0);
+});
+
 test('malformed signing params give -32602', async () => {
   const h = setup();
   await granted(h, A);

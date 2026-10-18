@@ -65,7 +65,7 @@ test('typed data and transactions forward only the params the card showed: [addr
   await h.call(A, 'eth_signTypedData_v4', [X, data, { isSilentSign: true }]);
   await h.call(A, 'eth_sendTransaction', [tx, { isSilentSign: true }]);
   assert.deepEqual(h.wallet.calls.find((c) => c.method === 'eth_signTypedData_v4').params, [X, data]);
-  assert.deepEqual(h.wallet.calls.find((c) => c.method === 'eth_sendTransaction').params, [tx]);
+  assert.deepEqual(h.wallet.calls.find((c) => c.method === 'eth_sendTransaction').params, [{ ...tx, chainId: '0x38' }]);
 });
 
 test('canPrompt false (popup window): personal_sign shows the card first, then signs; no gated wallet call at all', async () => {

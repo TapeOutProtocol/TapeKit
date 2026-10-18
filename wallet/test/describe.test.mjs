@@ -78,7 +78,8 @@ test('transaction: a malformed value is shown raw, not guessed', () => {
   // Not a JSON-RPC quantity: a wallet may read it as hex (0x1000…), so the card must not say "1 BNB"
   assert.equal(describeSign(card('eth_sendTransaction', [{ from: X, to: Y, value: '1000000000000000000' }])).value, '1000000000000000000 (?)');
   assert.equal(describeSign(card('eth_sendTransaction', [{ from: X, to: Y, value: 1000 }])).value, '0.000000000000001 BNB', 'JS numbers are unambiguous');
-  assert.equal(describeSign(card('eth_sendTransaction', [{ from: X, to: Y, input: '0xdeadbeef00' }])).selector, '0xdeadbeef', 'input is read like data');
+  // The router hands the card the rebuilt transaction (params.js), which carries the call data as `data` only.
+  assert.equal(describeSign(card('eth_sendTransaction', [{ from: X, to: Y, input: '0xdeadbeef00' }])).dataBytes, 0, 'input is not read');
 });
 
 test('formatUnits trims trailing zeros and keeps every digit', () => {
