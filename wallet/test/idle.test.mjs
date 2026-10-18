@@ -79,6 +79,33 @@ test('start uses the initial hold so a slow first request is not cut off', () =>
   assert.equal(closed(), 1);
 });
 
+test('the first request ends the initial hold: answered at 1.5 s, closed 3 s later (not at 15 s)', () => {
+  const { clock, closer, closed } = setup({ initialHoldMs: 15_000 });
+  closer.start();
+  clock.advance(1000);
+  closer.busy();
+  clock.advance(500);
+  closer.done();
+  clock.advance(2999);
+  assert.equal(closed(), 0);
+  clock.advance(1);
+  assert.equal(closed(), 1);
+});
+
+test('a hold set while busy still applies after the initial hold is dropped (the notice stays 5 s)', () => {
+  const { clock, closer, closed } = setup({ initialHoldMs: 15_000 });
+  closer.start();
+  closer.busy();
+  closer.hold(5000);
+  closer.done();
+  closer.busy();   // a second request while the notice shows
+  closer.done();
+  clock.advance(4999);
+  assert.equal(closed(), 0);
+  clock.advance(1);
+  assert.equal(closed(), 1);
+});
+
 test('disable stops auto-closing for good (e.g. install guidance is shown)', () => {
   const { clock, closer, closed } = setup();
   closer.start();

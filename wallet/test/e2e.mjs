@@ -188,10 +188,13 @@ try {
   await waitHubClosed(a);
   await clickCall(a, 'sw196', 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);
   const sw196 = await result(a, 'sw196');
+  const answeredAt = Date.now();
   await call(a, 'cid196', 'eth_chainId');
   check('AC7 A switches to X Layer: null, chainChanged, eth_chainId 0xc4', sw196.result === null && (await result(a, 'cid196')).result === '0xc4'
     && (await events(a)).some(([e, d]) => e === 'chainChanged' && d === '0xc4'), J(sw196));
-  await waitHubClosed(a);
+  const idleClosed = await waitHubClosed(a);
+  const idleMs = Date.now() - answeredAt;
+  check('the hub tab closes about 3 s after its last answer (the 15 s first-request hold ends with the first request)', !!idleClosed && idleMs < 6000, `${idleMs} ms`);
   // Typed data is chain-bound: the wallet (on BNB Chain) must move to X Layer. With the script it opens a tab,
   // since a page has no second click to move it to a tab later.
   const mark = walletCalls().length;
