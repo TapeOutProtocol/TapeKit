@@ -14,6 +14,8 @@
 //     small window, focused, for a message signature; else in the small window without focus. Each such
 //     request is kept in chrome.storage.session (pending.js) until answered, so a restarted worker still
 //     delivers it.
+//   - A request that would open a card or the wallet in front of the user, without a click on the site, is
+//     taken only from the tab the user is on, and not right after the user rejected that site (front.js).
 //   - A site whose port closed while this worker ran (page gone or put in the back/forward cache) loses its
 //     unsent requests; when relay.js comes back and asks for them (`resume`), they fail 4900.
 // Router events from the hub go to the tabs showing that one origin (chrome.tabs.sendMessage), never others.
@@ -26,6 +28,7 @@ import { gatewayInfo, syncRouting, ROUTING_KEY } from './routing.js';
 import { SNAPSHOT_KEY, cleanSnapshot, snapshotFor, localAnswer, connectedAnswer, siteChainOf, hubPlace } from './snapshot.js';
 import { createPendingStore } from './pending.js';
 import { createHubLink } from './hub-link.js';
+import { createFrontGuard } from './front.js';
 
 const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const notEnabled = () => rpcError(ERR.UNAUTHORIZED, 'TapeKit wallet routing is not enabled for this page.');
@@ -43,6 +46,7 @@ export function createWalletBackground({
   const pending = createPendingStore({ area: chrome.storage.session, now, onError });
   const sitePorts = new Map();   // documentId → port, for this worker's lifetime only
   const rpc = createReadRpc({ fetchImpl });
+  const front = createFrontGuard({ chrome, now, onError });
 
   /** Current gateway, whether routing is on for it, and the hub's snapshot for it. Read fresh every time. */
   async function config() {
@@ -66,6 +70,7 @@ export function createWalletBackground({
 
   function deliver(entry, reply) {
     if (entry.kind !== 'site') { pending.remove([entry.hubId]); return; }
+    if (entry.state !== 'done') front.settled(entry, reply).catch((e) => onError(e, 'front.settled'));
     const port = sitePorts.get(entry.documentId);
     if (!port) { pending.update(entry.hubId, { state: 'done', reply }); return; }   // relay.js will resume
     pending.remove([entry.hubId]);
@@ -112,8 +117,10 @@ export function createWalletBackground({
       const connected = kind === 'permission' ? connectedAnswer(snapshot, site, req.method, req.params) : null;
       if (connected !== null) return reply({ result: connected });
       const sender = port.sender;
-      const entry = { kind: 'site', origin: site.origin, documentId: sender.documentId, tabId: sender.tab.id, siteId: req.id, method: req.method, params: req.params, gesture };
-      await toHub(entry, hubPlace(req.method, gesture, snapshot, site.origin), info);
+      const place = hubPlace(req.method, gesture, snapshot, site.origin);
+      await front.admit({ origin: site.origin, tabId: sender.tab.id, place, gesture }, info);
+      const entry = { kind: 'site', origin: site.origin, documentId: sender.documentId, tabId: sender.tab.id, siteId: req.id, method: req.method, params: req.params, gesture, place };
+      await toHub(entry, place, info);
     } catch (e) {
       if (!isRpcError(e)) onError(e, 'site.request');
       reply({ error: isRpcError(e) ? e : rpcError(ERR.INTERNAL) });

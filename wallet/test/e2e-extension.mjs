@@ -298,13 +298,22 @@ try {
   check('AC3 B on load (no click): the site dialog with B\'s identity, Allow disabled; Reject gives 4001', r1.dlg && has(r1.dlg.card, SITE_B.name, B.container) && r1.dlg.buttons[1].disabled === true
     && r1.res.error && r1.res.error.code === 4001, J(r1.res));
   check('the dialog (it may lead to the wallet\'s connect) is in a hub tab next to B', dialogTab.ok, J(dialogTab));
+  // Audit 2026-10-18 issue 4: right after a Reject, the site may not bring the dialog back without a click. A
+  // simulated element.click() is no click, and neither is a forged navigator.userActivation in the page's own
+  // world: both fail at once (4001 'rejected'), with no dialog and no grant. Had either counted as a click, it
+  // would have ended the pause and been granted (a click connect is granted with the notice only).
+  await waitNoHub();
+  const cardsBefore = calls().length;
   await ev(bt, `(__e2e.next = () => __e2e.call('b-sim', 'eth_requestAccounts', []), document.getElementById('__e2e_btn').click(), 1)`);
-  const r2 = await rejectDialog(bt, 'b-sim');
-  check('a simulated element.click() is not a gesture: dialog, Reject gives 4001', r2.dlg && r2.res.error && r2.res.error.code === 4001, J(r2.res));
+  const r2 = await result(bt, 'b-sim', 15_000);
+  check('issue 4: right after the Reject, a simulated element.click() (no gesture) fails at once: 4001 rejected (zh + en), no hub opens',
+    !!r2 && !!r2.error && r2.error.code === 4001 && r2.error.data && r2.error.data.reason === 'rejected' && has(r2.error.data.messages.zh, '拒绝') && hubPages().length === 0, J(r2));
   await ev(bt, `(Object.defineProperty(Navigator.prototype, 'userActivation', { configurable: true, get: () => ({ isActive: true, hasBeenActive: true }) }),
     __e2e.next = () => __e2e.call('b-forged', 'eth_requestAccounts', []), document.getElementById('__e2e_btn').click(), navigator.userActivation.isActive)`);
-  const r3 = await rejectDialog(bt, 'b-forged');
-  check('a page that forges navigator.userActivation in its own world gets the dialog, not a grant', r3.dlg && r3.res.error && r3.res.error.code === 4001, J(r3.res));
+  const r3 = await result(bt, 'b-forged', 15_000);
+  await sleep(1000);
+  check('a page that forges navigator.userActivation in its own world gets no click either: still 4001 rejected, no dialog, no grant',
+    !!r3 && !!r3.error && r3.error.code === 4001 && r3.error.data && r3.error.data.reason === 'rejected' && hubPages().length === 0 && calls().length === cardsBefore, J(r3));
   // Audit 2026-10-18 issue 3: B, just rejected, goes around the extension. It opens a blank window during an
   // unrelated click, and once that click's activation is gone (5 s) sends the window to the hub and asks for the
   // address through the hub's script channel, whose first request used to count as the click. The hub knows the
@@ -372,6 +381,18 @@ try {
   const snap = await sw(`chrome.storage.local.get(${J(SNAPSHOT_KEY)}).then((r) => Object.entries(r[${J(SNAPSHOT_KEY)}].perms).filter(([, e]) => e.accounts.length).map(([o]) => o))`);
   check('the snapshot no longer grants A', !snap.includes(originOf(SITE_A)) && snap.includes(originOf(SITE_B)), J(snap));
   await waitNoHub();
+  // Audit 2026-10-18 issue 4: the extension popup page is the tab in front now; A sits in a background tab. A's
+  // requests that would open the site dialog or a card, without a click, are refused (4100 'not-active') and
+  // nothing opens; once the user is back on A, the dialog opens as before.
+  await call(a, 'bg-conn', 'eth_requestAccounts', []);
+  await call(a, 'bg-sign', 'personal_sign', [msgHex, FAKE_ACCOUNT]);
+  const [bgConn, bgSign] = [await result(a, 'bg-conn', 15_000), await result(a, 'bg-sign', 15_000)];
+  await sleep(1000);
+  check('issue 4: A in a background tab, no click: the site dialog and a signing card are refused (4100 not-active, zh + en), no hub opens',
+    [bgConn, bgSign].every((r) => !!r && !!r.error && r.error.code === 4100 && r.error.data && r.error.data.reason === 'not-active' && has(r.error.data.messages.zh, '标签页'))
+    && hubPages().length === 0, J([bgConn, bgSign]));
+  await b.send('Target.activateTarget', { targetId: a.targetId });
+  await backOn(SITE_A);
   await call(a, 'a-again', 'eth_requestAccounts', []);
   const again = await rejectDialog(a, 'a-again');
   check('AC4 after the revoke, A asks again without a click: the site dialog, not the old grant; Reject gives 4001', again.dlg && has(again.dlg.card, SITE_A.name)

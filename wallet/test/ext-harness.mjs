@@ -26,10 +26,10 @@ export function manualTimers() {
 }
 
 /**
- * @param {{ chrome?: object, snapshot?: object|null, routing?: boolean, tag?: string, fetchImpl?: Function }} opts
+ * @param {{ chrome?: object, snapshot?: object|null, routing?: boolean, tag?: string, fetchImpl?: Function, now?: () => number }} opts
  *   snapshot  { perms, accounts } as the hub would publish it (stored as the background would store it)
  */
-export function setup({ chrome = null, snapshot = null, routing = true, tag = 'a', fetchImpl = null } = {}) {
+export function setup({ chrome = null, snapshot = null, routing = true, tag = 'a', fetchImpl = null, now = undefined } = {}) {
   const c = chrome || fakeChrome({ gateway: GATEWAY });
   if (!chrome) {
     const local = {};
@@ -46,6 +46,7 @@ export function setup({ chrome = null, snapshot = null, routing = true, tag = 'a
     getGateway: async () => (await c.storage.sync.get('gateway')).gateway || '',
     fetchImpl: fetchImpl || (async (url, init) => { fetched.push({ url, body: JSON.parse(init.body) }); return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0xread' }) }; }),
     newId: () => `${tag}-${++n}`,
+    ...(now ? { now } : {}),
     onError: (e, where) => errors.push({ where, e }),
     setTimer: timers.set,
     clearTimer: timers.clear,

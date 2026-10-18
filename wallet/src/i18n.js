@@ -70,6 +70,8 @@ const T = Object.freeze({
   'err.closed': { zh: 'TapeKit 页面被关掉了，请求已取消。', en: 'The TapeKit page was closed; the request was cancelled.' },
   'err.popup': { zh: '浏览器拦住了 TapeKit 页面。请点网站上的按钮再试。', en: 'The browser blocked the TapeKit page. Click the button on the site and try again.' },
   'err.tab': { zh: 'TapeKit 只能在浏览器标签页里使用钱包，这个小窗口做不到。请再试一次。', en: 'TapeKit can use your wallet only from a browser tab, not from this small window. Try again.' },
+  'err.notActive': { zh: '只有你正在看的网站标签页才能打开 TapeKit 的确认窗口。请切到这个网站，再点它的按钮。', en: 'Only the site tab you are looking at can open TapeKit. Switch to this site and click its button.' },
+  'err.rejected': { zh: '你刚拒绝了这个网站的请求。要继续，请在网站上点按钮再试。', en: 'You just rejected a request from this site. Click the button on the site to try again.' },
   'err.load': { zh: 'TapeKit 页面没有响应，已关闭。请检查网络，再点网站上的按钮重试。', en: 'The TapeKit page did not respond and was closed. Check your connection, then click the button on the site again.' },
   'err.other': { zh: '钱包返回了错误（{code}）。', en: 'The wallet returned an error ({code}).' },
 });

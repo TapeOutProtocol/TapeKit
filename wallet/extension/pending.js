@@ -3,8 +3,9 @@
 // written to chrome.storage.session (memory only, cleared when the browser closes, not readable by content
 // scripts). A restarted worker reloads the table: the hub's answer still reaches the site.
 //
-// Entry: { hubId, kind: 'site'|'revoke', origin, documentId, tabId, siteId, method, params, gesture,
+// Entry: { hubId, kind: 'site'|'revoke', origin, documentId, tabId, siteId, method, params, gesture, place,
 //          state: 'queued'|'sent'|'done', hostTabId, moved, reply, at }
+//   place   where it first went (snapshot.js hubPlace); front.js pauses a site after a Reject of a 'tab'/'window' one
 //   tabId   the site's tab                hostTabId  the tab of the hub host it is bound to (null: choosing)
 //   queued  waiting for that hub to be ready     sent  the hub has it
 //   moved   true once moved from the notice window to a hub tab (hub-link.js; at most once)

@@ -60,15 +60,16 @@ test('a request goes page → relay → port with only id, method, params and th
   assert.deepEqual(bg.got.slice(1), [{ type: 'request', id: 9, method: 'eth_requestAccounts', params: [], gesture: false }]);
 });
 
-test('gesture: true only for a connect request while the isolated world sees user activation', async () => {
+test('gesture: true for any request while the isolated world sees user activation (a connect is granted on it; front.js lets a click open a card)', async () => {
   const { win, rt, provider } = pair({ userActive: true });
   provider.request({ method: 'eth_requestAccounts', params: [] });
   provider.request({ method: 'personal_sign', params: ['0x00', '0x' + 'aa'.repeat(20)] });
   await flush();   // the relay reads the activation when the message arrives
   win.navigator.userActivation.isActive = false;
   provider.request({ method: 'wallet_requestPermissions', params: [{ eth_accounts: {} }] });
+  provider.request({ method: 'personal_sign', params: ['0x00', '0x' + 'aa'.repeat(20)] });
   await flush();
-  assert.deepEqual(rt.last().got.map((m) => [m.method, m.gesture]), [['eth_requestAccounts', true], ['personal_sign', false], ['wallet_requestPermissions', false]]);
+  assert.deepEqual(rt.last().got.map((m) => [m.method, m.gesture]), [['eth_requestAccounts', true], ['personal_sign', true], ['wallet_requestPermissions', false], ['personal_sign', false]]);
 });
 
 test('answers reach the page only for ids it waits for; errors become ProviderRpcError', async () => {

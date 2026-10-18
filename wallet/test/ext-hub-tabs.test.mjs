@@ -84,6 +84,7 @@ test('a notice goes to the hub tab only while that tab is the one shown; otherwi
   const { chrome } = setup({ snapshot: granted([A]) });
   const a = site(chrome, { tabId: 7 });
   const b = site(chrome, { origin: B, tabId: 9 });
+  await chrome.tabs.update(7, { active: true });   // the user is on A (front.js: a card opens only for the tab in front)
   a.ask(1, 'eth_sendTransaction', TX);
   await flush();
   const tab = hub(chrome, lastOpened(chrome));
@@ -156,7 +157,7 @@ test('a hub tab the user took to another page is no longer a host: the next requ
   h.remote.disconnect();                                                    // the hub page unloads
   await flush();
   assert.equal(a.reply(1).error.code, 4001);
-  a.ask(2, 'eth_sendTransaction', TX);
+  a.ask(2, 'eth_sendTransaction', TX, true);   // the site asks again with a click (front.js: after a 4001 it needs one)
   await flush();
   assert.deepEqual(chrome.log.opened.map((o) => o.how), ['tab', 'tab'], 'a new hub tab');
   const h2 = hub(chrome, lastOpened(chrome));
