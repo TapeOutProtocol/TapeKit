@@ -4,7 +4,8 @@
 //   Wallet hub, root host only (hub-route.js): /.tape/wallet/* → ../wallet/hub, /.tape/wallet/src/** → ../wallet/src
 //   (same bytes as the build, hub-files.mjs). The hub HTML gets the same CSP header as in production, so
 //   browser tests see the real policy (frame-ancestors, script-src). On site subdomains these paths stay
-//   the bootstrap page.
+//   the bootstrap page here; the Service Worker it installs answers them with the reserved notice, as
+//   worker.js does in production (serve.js isReservedSitePath).
 // Chrome 把 *.localhost 都解析到本机，所以 http://4246-0.localhost:8096/ 就能测端到端。
 import http from 'node:http';
 import fs from 'node:fs';

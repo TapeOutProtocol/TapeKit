@@ -20,6 +20,7 @@
 //     goes to the popup window, whose hub handles it or answers 4900 'needs-tab'.
 //   - window.open runs synchronously inside request(), so it is still inside the click that caused it. When the
 //     browser refuses (no user gesture, or popups blocked) the request fails with 4100 and asks for a click.
+//     A browser that allows pop-ups for this site never refuses (see popup-channel.js, "Known limits").
 //   - The hub treats only the FIRST request after its `ready` as carrying the click, so that request is the one
 //     that opened the tab. Requests made before `ready` are queued in order; the sync reads go last.
 //   - A connect or a signature sent to a hub that is already open brings it to the front (an opener may focus

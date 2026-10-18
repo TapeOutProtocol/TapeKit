@@ -2,8 +2,9 @@
 // (local), so production and dev follow one rule. Pure: no Node or Worker APIs.
 //
 // The hub lives only on the gateway ROOT host (tapekit.org, localhost:8096), at /.tape/wallet/. Wallet
-// extensions then see one origin for every site, and site subdomains (4246-0.tapekit.org) can never run it:
-// on a site host, /.tape/wallet/* is served exactly as before, i.e. the bootstrap page under the sandbox CSP.
+// extensions then see one origin for every site, and site subdomains (4246-0.tapekit.org) can never run it. On a
+// site host the path is reserved (serve.js isReservedSitePath): worker.js and sw.js answer it with a notice that
+// names the real hub, never the site's own file (audit 2026-10-18 issue 6); { kind: 'site' } is that case.
 // "Root" uses the same test as boot.js: the first label is not shaped like a site label (compat-tier labels such
 // as 4246-0-open included) and the host has no trailing dot (another origin). Shape, not validity: an invalid site label such as 01-0 is not root either.
 

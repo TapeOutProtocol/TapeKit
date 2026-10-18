@@ -11,20 +11,23 @@
 //     (origin.js) are read. Nothing the message says about its origin or a gesture is used (readEnvelope).
 //   - Replies and events go to opener.postMessage(msg, thatOrigin), never '*': if the opener has navigated
 //     elsewhere since, the browser drops them.
-//   - Gesture (design §6): the browser only lets a site open a tab or a window inside a user gesture, so the
-//     FIRST request after the hub loads is the one that opened it. Only that request counts as a gesture, and
-//     only if it arrives within `gestureWindowMs`; every later request does not.
+//   - Gesture (design §6): browsers block tabs and windows opened without a user gesture, so the FIRST request
+//     after the hub loads is the one that opened it. Only that request counts as a gesture, and only if it
+//     arrives within `gestureWindowMs`; every later request does not.
 //   - But the opener can reload or re-navigate the hub it opened at any time, without a click
 //     (hub.location = …, or window.open(url, sameName)). A reloaded hub must not hand out a fresh gesture,
 //     or a site could re-grant itself right after the user revoked it. The hub passes
 //     gestureAvailable = claimFirstLoad(sessionStorage): sessionStorage belongs to the hub's tab (a top-level
 //     browsing context, popup or not), survives its reloads and navigations, and only the hub origin can
 //     write it.
-//   - Known limit of that rule: a site may open a blank window during any click and send it to the hub much
-//     later, without one ("banked click"); that first request still counts. With the TapeKit extension
-//     installed, the extension reads the click itself and a site has no reason to use this channel at all, so
-//     the hub passes gestureAllowed = "the extension is not here" (read when each request arrives) and such a
-//     request gets the site dialog instead (audit 2026-10-18 issue 3; README §12).
+//   - Known limits of "the first request is the click" (README §12): this hub cannot see the click on the site.
+//     When the user has allowed pop-ups for the site (or for all sites), the browser stops blocking, and a
+//     connect without a click opens the hub too. And a site may open a blank window during any earlier click
+//     and send it to the hub later, without one ("banked click"). Either way the site gets the address with only
+//     the notice; signing still needs the card and the wallet. With the TapeKit extension installed, the
+//     extension reads the click itself and a site has no reason to use this channel, so the hub passes
+//     gestureAllowed = "the extension is not here" (read when each request arrives), and such a request gets
+//     the site dialog instead (audit 2026-10-18 issue 3).
 //
 // Channel interface shared with later channels (the extension relay): { emit(origin, event, data) → bool,
 // pending() → number, stop() }. The hub fans router events out to every channel; each delivers only to the
