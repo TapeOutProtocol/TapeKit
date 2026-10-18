@@ -20,6 +20,11 @@
 //     gestureAvailable = claimFirstLoad(sessionStorage): sessionStorage belongs to the hub's tab (a top-level
 //     browsing context, popup or not), survives its reloads and navigations, and only the hub origin can
 //     write it.
+//   - Known limit of that rule: a site may open a blank window during any click and send it to the hub much
+//     later, without one ("banked click"); that first request still counts. With the TapeKit extension
+//     installed, the extension reads the click itself and a site has no reason to use this channel at all, so
+//     the hub passes gestureAllowed = "the extension is not here" (read when each request arrives) and such a
+//     request gets the site dialog instead (audit 2026-10-18 issue 3; README §12).
 //
 // Channel interface shared with later channels (the extension relay): { emit(origin, event, data) → bool,
 // pending() → number, stop() }. The hub fans router events out to every channel; each delivers only to the
@@ -79,12 +84,12 @@ export function hintedPopupWindow(win) {
 
 /**
  * @param {{ win: Window, hubLocation: string|URL|Location, handle: (req: object) => Promise<unknown>,
- *           gestureAvailable?: boolean, gestureWindowMs?: number, now?: () => number, onPendingChange?: (n: number) => void,
+ *           gestureAvailable?: boolean, gestureAllowed?: () => boolean, gestureWindowMs?: number, now?: () => number, onPendingChange?: (n: number) => void,
  *           onRequestDone?: (info: { origin: string, method: string, error: object|null }) => void,
  *           onError?: (e: unknown, where: string) => void }} opts
  */
 export function createPopupChannel({
-  win, hubLocation, handle, gestureAvailable = true, gestureWindowMs = 10_000, now = Date.now,
+  win, hubLocation, handle, gestureAvailable = true, gestureAllowed = () => true, gestureWindowMs = 10_000, now = Date.now,
   onPendingChange = noop, onRequestDone = noop, onError = noop,
 } = {}) {
   if (!win || typeof win.addEventListener !== 'function') throw new TypeError('popup-channel: win is required');
@@ -103,6 +108,10 @@ export function createPopupChannel({
       if (msg.type === 'response' && !('error' in msg)) post(target, origin, makeError(msg.id, rpcError(ERR.INTERNAL)));
       return false;
     }
+  }
+
+  function allowed() {
+    try { return gestureAllowed() === true; } catch { return false; }
   }
 
   function setPending(n) {
@@ -132,7 +141,7 @@ export function createPopupChannel({
     if (!parseSiteOrigin(origin, hubLocation)) return;
     const msg = readEnvelope(event.data);
     if (!msg || msg.type !== 'request') return;
-    const gesture = !gestureUsed && now() - startedAt <= gestureWindowMs;
+    const gesture = !gestureUsed && now() - startedAt <= gestureWindowMs && allowed();
     gestureUsed = true;
     talking = origin;
     setPending(pending + 1);

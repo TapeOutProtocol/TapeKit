@@ -27,14 +27,14 @@ function fakeHub({ opener = fakeOpener(), hash = '' } = {}) {
   };
 }
 
-function setup({ handle, hash, opener, now, gestureWindowMs, gestureAvailable } = {}) {
+function setup({ handle, hash, opener, now, gestureWindowMs, gestureAvailable, gestureAllowed } = {}) {
   const win = fakeHub({ hash, opener });
   const calls = [];
   const done = [];
   const pendingLog = [];
   const errors = [];
   const channel = createPopupChannel({
-    win, hubLocation: HUB, now, gestureWindowMs, gestureAvailable,
+    win, hubLocation: HUB, now, gestureWindowMs, gestureAvailable, gestureAllowed,
     handle: async (req) => { calls.push(req); return handle ? handle(req) : '0x38'; },
     onPendingChange: (n) => pendingLog.push(n),
     onRequestDone: (info) => done.push(info),
@@ -129,6 +129,27 @@ test('claimFirstLoad: true once per window; missing or broken storage gives fals
   assert.equal(claimFirstLoad({ getItem() { throw new Error('SecurityError'); }, setItem() {} }), false);
   assert.equal(claimFirstLoad({ getItem: () => null, setItem() { throw new Error('QuotaExceededError'); } }), false);
   assert.equal(claimFirstLoad({ getItem: () => null, setItem() {} }), false, 'a write that does not stick is not trusted');
+});
+
+test('gestureAllowed false (the extension is here): the first request is no gesture either, and uses it up (audit 2026-10-18 issue 3)', async () => {
+  let extension = false;
+  const h = setup({ gestureAllowed: () => !extension });
+  extension = true;   // read when the request arrives, not when the channel starts
+  h.send(makeRequest(1, 'eth_requestAccounts', []));
+  extension = false;
+  h.send(makeRequest(2, 'eth_requestAccounts', []));
+  await tick();
+  assert.deepEqual(h.calls.map((c) => c.gesture), [false, false]);
+  for (const gestureAllowed of [() => 'yes', () => { throw new Error('x'); }]) {
+    const g = setup({ gestureAllowed });
+    g.send(makeRequest(1, 'eth_requestAccounts', []));
+    await tick();
+    assert.equal(g.calls[0].gesture, false, 'only a literal true allows it');
+  }
+  const ok = setup({ gestureAllowed: () => true });
+  ok.send(makeRequest(1, 'eth_requestAccounts', []));
+  await tick();
+  assert.equal(ok.calls[0].gesture, true);
 });
 
 test('gestureAvailable must be literally true', async () => {

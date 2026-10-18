@@ -33,6 +33,7 @@ import { createExtChannel } from '/.tape/wallet/src/ext-channel.js';
 import { createIdleCloser } from '/.tape/wallet/src/idle.js';
 import { pickLang, tr, errorText } from '/.tape/wallet/src/i18n.js';
 import { REASON_NEEDS_TAB } from '/.tape/wallet/src/protocol.js';
+import { HUB_MARK } from '/.tape/wallet/src/ext-protocol.js';
 import { parseSiteOrigin } from '/.tape/wallet/src/origin.js';
 import { grantedOrigins, grantInfo } from '/.tape/wallet/src/permissions.js';
 import { createCards, NOTICE_MS } from './cards.js';
@@ -214,11 +215,19 @@ function requestDone({ origin, error }) {
   panels.showStatus(t('status.failed', { site: name, reason: errorText(lang, error.code) }));
 }
 
+/**
+ * The TapeKit extension is here: its hub-relay.js marked this page at document_start, or said hello. Then a site
+ * that talks to the hub through the script channel is going around the extension, which reads clicks itself,
+ * so the script channel hands out no click (popup-channel.js gestureAllowed; audit 2026-10-18 issue 3).
+ */
+const extensionHere = () => document.documentElement.hasAttribute(HUB_MARK) || extChannel.present();
+
 let lastPending = 0;
 const popupChannel = createPopupChannel({
   win: window,
   hubLocation,
   gestureAvailable: firstLoad,
+  gestureAllowed: () => !extensionHere(),
   handle: async (req) => (await routerReady).handle(req),
   onPendingChange: (n) => {
     if (closer) { if (n > lastPending) closer.busy(); else closer.done(); }

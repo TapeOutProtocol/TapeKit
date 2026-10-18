@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startHubRelay, HUB_RECONNECT_GAP_MS } from '../extension/hub-relay.js';
 import { createExtChannel } from '../src/ext-channel.js';
-import { HUB_CHANNEL, DIR, HUB_PORT } from '../src/ext-protocol.js';
+import { HUB_CHANNEL, DIR, HUB_PORT, HUB_MARK } from '../src/ext-protocol.js';
 import { fakeWindow, fakeRuntime } from './fake-window.mjs';
 import { flush } from './fake-chrome.mjs';
 
@@ -42,6 +42,27 @@ test('hub-relay connects only once the hub says hub-ready, with fresh: true', as
   assert.equal(rt.runtime.connects, 1);
   assert.equal(rt.last().port.name, HUB_PORT);
   assert.deepEqual(rt.last().got, [{ type: 'ready', fresh: true }]);
+});
+
+test('hub-relay marks the hub page as soon as it runs (document_start), before any message, so the hub knows the extension is here', () => {
+  const win = fakeWindow(HUB);
+  assert.equal(win.document.documentElement.hasAttribute(HUB_MARK), false);
+  startHubRelay({ win, runtime: fakeRuntime().runtime });
+  assert.equal(win.document.documentElement.hasAttribute(HUB_MARK), true);
+  const framed = fakeWindow(HUB, { top: false });
+  startHubRelay({ win: framed, runtime: fakeRuntime().runtime });
+  assert.equal(framed.document.documentElement.hasAttribute(HUB_MARK), false, 'not in a frame');
+});
+
+test('the hub channel reports whether the extension said hello (present)', async () => {
+  const { channel } = setup();
+  assert.equal(channel.present(), false);
+  await flush();
+  const { rt, channel: ch2 } = setup();
+  await flush();
+  rt.last().port.postMessage({ type: 'hello', managed: false, popup: false });
+  await flush();
+  assert.equal(ch2.present(), true);
 });
 
 test('a request from the extension reaches the router with its origin and gesture; the answer goes back', async () => {

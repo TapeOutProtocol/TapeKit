@@ -9,7 +9,9 @@
 //     for minutes, so when Chrome stops the background the relay reconnects at once (at most once a second)
 //     with `fresh: false`. Other hub pages (a tab the user opened) reconnect only when they have something to
 //     send, so an idle tab does not keep waking the extension.
-import { HUB_CHANNEL, HUB_PORT, DIR, wrapMessage, unwrapMessage, readToHub, readFromHub } from '../src/ext-protocol.js';
+//   - It marks the page (HUB_MARK) as soon as it runs, at document_start, before any hub script: the hub knows
+//     the extension is here before a site's first message can reach it, without waiting for `hello`.
+import { HUB_CHANNEL, HUB_PORT, HUB_MARK, DIR, wrapMessage, unwrapMessage, readToHub, readFromHub } from '../src/ext-protocol.js';
 
 export const HUB_RECONNECT_GAP_MS = 1000;
 
@@ -19,6 +21,7 @@ export const HUB_RECONNECT_GAP_MS = 1000;
  */
 export function startHubRelay({ win, runtime, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
   if (!win || win.top !== win || !runtime) return null;
+  try { win.document.documentElement.setAttribute(HUB_MARK, ''); } catch { /* no DOM to mark */ }
   const origin = win.location.origin;
   let port = null;
   let hubReady = false;

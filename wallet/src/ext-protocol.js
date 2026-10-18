@@ -18,6 +18,12 @@ export const HUB_PORT = 'tapekit-wallet-hub';
 export const EVENT_MESSAGE = 'tapekit-wallet:event';
 /** chrome.runtime.sendMessage type for "revoke this site" from the extension popup (popup → background). */
 export const REVOKE_MESSAGE = 'tapekit-wallet:revoke';
+/**
+ * Attribute hub-relay.js puts on the hub page's <html> at document_start: the TapeKit extension is here. Only the
+ * hub origin's own scripts and extensions can write the hub's DOM, never a site, and the mark can only make the
+ * hub stricter (hub.js: the script channel then hands out no click).
+ */
+export const HUB_MARK = 'data-tapekit-extension';
 
 export const DIR = Object.freeze({ toRelay: 'to-relay', toPage: 'to-page', toHub: 'to-hub', fromHub: 'from-hub' });
 

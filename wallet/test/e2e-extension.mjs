@@ -305,6 +305,31 @@ try {
     __e2e.next = () => __e2e.call('b-forged', 'eth_requestAccounts', []), document.getElementById('__e2e_btn').click(), navigator.userActivation.isActive)`);
   const r3 = await rejectDialog(bt, 'b-forged');
   check('a page that forges navigator.userActivation in its own world gets the dialog, not a grant', r3.dlg && r3.res.error && r3.res.error.code === 4001, J(r3.res));
+  // Audit 2026-10-18 issue 3: B, just rejected, goes around the extension. It opens a blank window during an
+  // unrelated click, and once that click's activation is gone (5 s) sends the window to the hub and asks for the
+  // address through the hub's script channel, whose first request used to count as the click. The hub knows the
+  // extension is here (hub-relay.js marks it): B gets the site dialog, not the address.
+  await ev(bt, `(__e2e.next = () => { window.__bank = window.open('about:blank', 'banked', 'popup,width=400,height=640'); }, 1)`);
+  await b.click(bt.sessionId, '#__e2e_btn');
+  await sleep(6000);
+  await ev(bt, `(() => { const hubOrigin = ${J(`http://${HUB_HOST}`)}; window.__banked = [];
+    addEventListener('message', (e) => {
+      if (e.source !== __bank || e.origin !== hubOrigin || !e.data) return;
+      if (e.data.type === 'ready') __bank.postMessage({ channel: 'tapekit-wallet/1', type: 'request', id: 1, method: 'eth_requestAccounts', params: [] }, hubOrigin);
+      if (e.data.type === 'response') __banked.push(e.data);
+    });
+    __bank.location = ${J(HUB)} + '#origin=' + encodeURIComponent(location.origin); return 1; })()`);
+  const bankedAt = await until(async () => {
+    const reply = await ev(bt, `__banked[0] || null`);
+    if (reply) return { reply };
+    for (const p of hubPages()) { const st = await hubState(p).catch(() => ({})); if (st.card) return { hub: p, card: st.card }; }
+    return null;
+  }, 60_000);
+  if (bankedAt && bankedAt.hub) await b.click(bankedAt.hub.sessionId, REJECT_BTN);
+  const banked = bankedAt && bankedAt.reply ? bankedAt.reply : await until(() => ev(bt, `__banked[0] || null`), 30_000);
+  check('issue 3: with the extension installed, a banked click through the hub\'s script channel gets the site dialog, not the address; Reject gives 4001',
+    !!bankedAt && !!bankedAt.card && has(bankedAt.card, SITE_B.name) && !!banked && !!banked.error && banked.error.code === 4001, J({ card: bankedAt && bankedAt.card && bankedAt.card.slice(0, 120), banked }));
+  await waitNoHub();
   await call(bt, 'b-acc', 'eth_accounts');
   await clickCall(bt, 'b-sign', 'personal_sign', [msgHex, FAKE_ACCOUNT]);
   const bSign = await result(bt, 'b-sign');
