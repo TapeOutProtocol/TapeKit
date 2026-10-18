@@ -120,23 +120,25 @@ try {
   check('A: read calls go straight to a BNB Chain node (block 0 hash)', g0.result && g0.result.hash === GENESIS['0x38'], g0.result && g0.result.hash);
   check('A: none of that opened a window', popupsOf(a).length === 0);
 
-  // ---- 2. AC1 + AC2: A connects inside a real click
+  // ---- 2. AC1 + AC2: A connects inside a real click. The hub cannot see that click (pop-ups may be allowed, or the
+  // click banked), so a site's first connect in script mode always gets the Allow / Reject dialog (audit
+  // 2026-10-18 issue 3, option B); after Allow there is no separate notice.
   await clickCall(a, 'conn1', 'eth_requestAccounts', []);
   const hub1 = await hubOf(a);
   const tabs1 = await tabsNow();
   const [hubTab, aTab] = [tabAt(tabs1, HUB), tabAt(tabs1, siteUrl(SITE_A))];
   check('a real click opens the hub as the active tab of a normal window, right after site A\'s tab (not a popup window)', !!hub1 && hubTab && aTab
     && hubTab.windowType === 'normal' && hubTab.windowId === aTab.windowId && hubTab.active && hubTab.index === aTab.index + 1, J({ hubTab, aTab }));
-  const shown = await until(async () => { const s = await hubState(hub1); return s.toast ? s : null; }, 60_000);
-  const tShown = Date.now();
-  const conn1 = await result(a, 'conn1');
-  check('AC2 A (real click) gets the address with no confirm dialog', J(conn1 && conn1.result) === J([FAKE_ACCOUNT]) && shown && shown.log.cardShows === 0, J(conn1));
-  check('AC2 the notice shows A\'s name, processor, container and account', shown && has(shown.toast, SITE_A.name, A.cpuName, A.container, FAKE_ACCOUNT), shown && shown.toast);
-  check('R3 the hub lists A under authorized sites', shown && has(shown.sites, SITE_A.name, A.container));
+  const dlg1 = await waitCard(hub1);
+  check('issue 3 (option B): A\'s first connect, even inside a real click, gets the Allow / Reject dialog with A\'s name, processor and container; Allow starts disabled, focus on Reject; the wallet is not asked yet',
+    dlg1 && has(dlg1.card, SITE_A.name, A.cpuName, A.container) && dlg1.buttons[1].disabled === true && dlg1.focus === dlg1.buttons[0].text && connects() === 0, dlg1 && dlg1.card.slice(0, 200));
   check('no Service Worker on the gateway root (checked from the hub)', (await ev(hub1, 'navigator.serviceWorker.getRegistrations().then((r) => r.length)')) === 0);
-  const gone = await until(async () => (hub1.closed ? 'window closed' : (await hubState(hub1)).toast ? null : 'notice hidden'), 10_000, 50);
-  const shownMs = Date.now() - tShown;
-  check('AC2 the notice closes by itself after about 5 s', !!gone && shownMs >= 4000 && shownMs <= 7000, `${gone} after ${shownMs} ms`);
+  await pressContinue(hub1);   // the dialog's second button: Allow
+  const conn1 = await result(a, 'conn1');
+  const shown = await hubState(hub1).catch(() => null);
+  check('AC2 after Allow, A gets the address; then the one-time wallet connection; no 5-second notice in script mode', J(conn1 && conn1.result) === J([FAKE_ACCOUNT])
+    && connects() === 1 && !!shown && shown.log.toastShows === 0, J({ conn1, log: shown && shown.log }));
+  check('R3 the hub lists A under authorized sites', shown && has(shown.sites, SITE_A.name, A.container), shown && shown.sites);
   check('the hub tab then closes by itself', !!(await waitHubClosed(a)));
   const backA = await until(async () => { const t = tabAt(await tabsNow(), siteUrl(SITE_A)); return t && t.active ? t : null; }, 5000);
   check('…and the browser is back on site A\'s tab', !!backA, J(backA));
@@ -326,6 +328,34 @@ try {
   await clickCall(bt, 'b-sign', 'personal_sign', [msgHex, FAKE_ACCOUNT]);
   const bSign = await result(bt, 'b-sign');
   check('AC4 A\'s grant does not work for B: signing with A\'s account gives 4100', bSign.error && bSign.error.code === 4100 && signs().length === 3, J(bSign));
+  // Audit 2026-10-18 issue 3, option B: a banked click, no extension. B opens a blank window during an unrelated
+  // click and, once that click's activation is gone (5 s), sends it to the hub and asks for the address. Before,
+  // that first request counted as the click and B got the address with only the notice.
+  await waitHubClosed(bt);
+  await ev(bt, `(__e2e.next = () => { window.__bank = window.open('about:blank', 'banked', 'popup,width=400,height=640'); }, 1)`);
+  await b.click(bt.sessionId, '#__e2e_btn');
+  await sleep(6000);
+  await ev(bt, `(() => { const hubOrigin = ${J(`http://${HUB_HOST}`)}; window.__banked = [];
+    addEventListener('message', (e) => {
+      if (e.source !== __bank || e.origin !== hubOrigin || !e.data) return;
+      if (e.data.type === 'ready') __bank.postMessage({ channel: 'tapekit-wallet/1', type: 'request', id: 1, method: 'eth_requestAccounts', params: [] }, hubOrigin);
+      if (e.data.type === 'response') __banked.push(e.data);
+    });
+    __bank.location = ${J(HUB)} + '#origin=' + encodeURIComponent(location.origin); return 1; })()`);
+  const bankHub = await hubOf(bt);
+  const bankedAt = await until(async () => {
+    const reply = await ev(bt, `__banked[0] || null`);
+    if (reply) return { reply };
+    const st = await hubState(bankHub).catch(() => ({}));
+    return st.card ? { card: st.card } : null;
+  }, 60_000);
+  if (bankedAt && bankedAt.card) await b.click(bankHub.sessionId, REJECT_BTN);
+  const banked = bankedAt && bankedAt.reply ? bankedAt.reply : await until(() => ev(bt, `__banked[0] || null`), 30_000);
+  await call(bt, 'b-acc2', 'eth_accounts');
+  check('issue 3 (option B): a banked click through the script channel gets the Allow / Reject dialog, not the address; Reject gives 4001, B still has no address',
+    !!bankedAt && !!bankedAt.card && has(bankedAt.card, SITE_B.name) && !!banked && !!banked.error && banked.error.code === 4001 && J((await result(bt, 'b-acc2')).result) === '[]',
+    J({ card: bankedAt && bankedAt.card && bankedAt.card.slice(0, 120), banked }));
+  await waitHubClosed(bt);
 
   // ---- 7. AC4: revoke A, then A is handled from scratch
   await waitHubClosed(a);
@@ -343,9 +373,11 @@ try {
   await waitHubClosed(a);
   await clickCall(a, 'conn3', 'eth_requestAccounts', []);
   const hub6 = await hubOf(a);
-  const again = await until(async () => { const s = await hubState(hub6); return s.toast ? s : null; }, 60_000);
+  const again = await waitCard(hub6);
+  await pressContinue(hub6);
   const conn3 = await result(a, 'conn3');
-  check('AC4 after the revoke, A with a real click is granted again, with the notice and no dialog', J(conn3.result) === J([FAKE_ACCOUNT]) && again && again.log.cardShows === 0, J(conn3));
+  check('AC4 after the revoke, A with a real click gets the Allow / Reject dialog again (the script channel never counts a click); Allow grants it, the wallet is not asked again',
+    J(conn3.result) === J([FAKE_ACCOUNT]) && again && has(again.card, SITE_A.name) && connects() === 1, J(conn3));
 
   // ---- 8. AC6: a site that is not opened is refused
   const nt = await b.newTab();

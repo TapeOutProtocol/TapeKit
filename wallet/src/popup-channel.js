@@ -11,23 +11,12 @@
 //     (origin.js) are read. Nothing the message says about its origin or a gesture is used (readEnvelope).
 //   - Replies and events go to opener.postMessage(msg, thatOrigin), never '*': if the opener has navigated
 //     elsewhere since, the browser drops them.
-//   - Gesture (design §6): browsers block tabs and windows opened without a user gesture, so the FIRST request
-//     after the hub loads is the one that opened it. Only that request counts as a gesture, and only if it
-//     arrives within `gestureWindowMs`; every later request does not.
-//   - But the opener can reload or re-navigate the hub it opened at any time, without a click
-//     (hub.location = …, or window.open(url, sameName)). A reloaded hub must not hand out a fresh gesture,
-//     or a site could re-grant itself right after the user revoked it. The hub passes
-//     gestureAvailable = claimFirstLoad(sessionStorage): sessionStorage belongs to the hub's tab (a top-level
-//     browsing context, popup or not), survives its reloads and navigations, and only the hub origin can
-//     write it.
-//   - Known limits of "the first request is the click" (README §12): this hub cannot see the click on the site.
-//     When the user has allowed pop-ups for the site (or for all sites), the browser stops blocking, and a
-//     connect without a click opens the hub too. And a site may open a blank window during any earlier click
-//     and send it to the hub later, without one ("banked click"). Either way the site gets the address with only
-//     the notice; signing still needs the card and the wallet. With the TapeKit extension installed, the
-//     extension reads the click itself and a site has no reason to use this channel, so the hub passes
-//     gestureAllowed = "the extension is not here" (read when each request arrives), and such a request gets
-//     the site dialog instead (audit 2026-10-18 issue 3).
+//   - No click, ever (design §6; Percy's decision 2026-10-18, audit issue 3 option B): this hub cannot see the
+//     click on the site. Browsers block tabs and windows opened without one, but not when the user has allowed
+//     pop-ups for the site, and a site can open a blank window during any earlier click and send it here later
+//     ("banked click"), or reload the hub it opened. So no request on this channel counts as a gesture: a site's
+//     first connect gets the Allow / Reject dialog (router.js newGrant), and a site the user allowed gets its
+//     address with no prompt until the grant is revoked.
 //
 // Channel interface shared with later channels (the extension relay): { emit(origin, event, data) → bool,
 // pending() → number, stop() }. The hub fans router events out to every channel; each delivers only to the
@@ -36,24 +25,6 @@ import { readEnvelope, makeResult, makeError, makeEvent, makeReady, rpcError, is
 import { parseSiteOrigin } from './origin.js';
 
 const noop = () => {};
-
-export const FIRST_LOAD_KEY = 'tapekit-wallet:popup-loaded:v1';
-
-/**
- * True only on the first hub load in this tab; marks the tab so every later load gets false.
- * Unreadable or unwritable storage gives false (no gesture: the site confirmation is shown instead).
- * @param {Storage|null} storage  the hub's sessionStorage
- */
-export function claimFirstLoad(storage, key = FIRST_LOAD_KEY) {
-  if (!storage) return false;
-  try {
-    if (storage.getItem(key) !== null) return false;
-    storage.setItem(key, '1');
-    return storage.getItem(key) === '1';
-  } catch {
-    return false;
-  }
-}
 
 /** The hub URL's fragment as parameters ('#origin=…&window=…'), or null. */
 function hashParams(win) {
@@ -87,18 +58,15 @@ export function hintedPopupWindow(win) {
 
 /**
  * @param {{ win: Window, hubLocation: string|URL|Location, handle: (req: object) => Promise<unknown>,
- *           gestureAvailable?: boolean, gestureAllowed?: () => boolean, gestureWindowMs?: number, now?: () => number, onPendingChange?: (n: number) => void,
+ *           onPendingChange?: (n: number) => void,
  *           onRequestDone?: (info: { origin: string, method: string, error: object|null }) => void,
  *           onError?: (e: unknown, where: string) => void }} opts
  */
 export function createPopupChannel({
-  win, hubLocation, handle, gestureAvailable = true, gestureAllowed = () => true, gestureWindowMs = 10_000, now = Date.now,
-  onPendingChange = noop, onRequestDone = noop, onError = noop,
+  win, hubLocation, handle, onPendingChange = noop, onRequestDone = noop, onError = noop,
 } = {}) {
   if (!win || typeof win.addEventListener !== 'function') throw new TypeError('popup-channel: win is required');
   if (typeof handle !== 'function') throw new TypeError('popup-channel: handle is required');
-  const startedAt = now();
-  let gestureUsed = gestureAvailable !== true;
   let pending = 0;
   let talking = null;   // origin of the latest accepted request: the site the opener currently shows
 
@@ -113,19 +81,15 @@ export function createPopupChannel({
     }
   }
 
-  function allowed() {
-    try { return gestureAllowed() === true; } catch { return false; }
-  }
-
   function setPending(n) {
     pending = n;
     onPendingChange(n);
   }
 
-  async function answer(source, origin, msg, gesture) {
+  async function answer(source, origin, msg) {
     let error = null;
     try {
-      const result = await handle({ origin, method: msg.method, params: msg.params, gesture });
+      const result = await handle({ origin, method: msg.method, params: msg.params, gesture: false });
       post(source, origin, makeResult(msg.id, result));
     } catch (e) {
       if (!isRpcError(e)) onError(e, 'popup.handle');
@@ -144,11 +108,9 @@ export function createPopupChannel({
     if (!parseSiteOrigin(origin, hubLocation)) return;
     const msg = readEnvelope(event.data);
     if (!msg || msg.type !== 'request') return;
-    const gesture = !gestureUsed && now() - startedAt <= gestureWindowMs && allowed();
-    gestureUsed = true;
     talking = origin;
     setPending(pending + 1);
-    answer(opener, origin, msg, gesture);
+    answer(opener, origin, msg);
   }
 
   win.addEventListener('message', onMessage);

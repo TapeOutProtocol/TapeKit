@@ -1,7 +1,7 @@
 // Offline unit tests for wallet/src/popup-channel.js: the hub side of the fallback channel (design §10.2).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPopupChannel, claimFirstLoad, hintedPopupWindow, FIRST_LOAD_KEY } from '../src/popup-channel.js';
+import { createPopupChannel, hintedPopupWindow } from '../src/popup-channel.js';
 import { makeRequest, makeResult, makeEvent, makeReady, rpcError, CHANNEL } from '../src/protocol.js';
 
 const HUB = 'https://tapekit.org/.tape/wallet/';
@@ -27,14 +27,14 @@ function fakeHub({ opener = fakeOpener(), hash = '' } = {}) {
   };
 }
 
-function setup({ handle, hash, opener, now, gestureWindowMs, gestureAvailable, gestureAllowed } = {}) {
+function setup({ handle, hash, opener } = {}) {
   const win = fakeHub({ hash, opener });
   const calls = [];
   const done = [];
   const pendingLog = [];
   const errors = [];
   const channel = createPopupChannel({
-    win, hubLocation: HUB, now, gestureWindowMs, gestureAvailable, gestureAllowed,
+    win, hubLocation: HUB,
     handle: async (req) => { calls.push(req); return handle ? handle(req) : '0x38'; },
     onPendingChange: (n) => pendingLog.push(n),
     onRequestDone: (info) => done.push(info),
@@ -80,85 +80,16 @@ test('replies go to the requesting origin, never "*"', async () => {
   assert.ok(h.posted.every((p) => p.target !== '*'));
 });
 
-test('only the first request after load carries the gesture', async () => {
+test('no request on this channel is a click, not even the first one after the hub opens (Allow / Reject instead; audit 2026-10-18 issue 3 option B)', async () => {
+  // The hub cannot see the click on the site: pop-ups may be allowed for it, or it may have opened a blank window
+  // during an earlier click ("banked click") and sent it here later. A site's first connect gets the dialog.
   const h = setup();
   h.send(makeRequest(1, 'eth_requestAccounts', []));
   h.send(makeRequest(2, 'eth_requestAccounts', []));
-  h.send(makeRequest(3, 'eth_requestAccounts', []), B);
+  h.send(makeRequest(3, 'wallet_requestPermissions', [{ eth_accounts: {} }]), B);
+  h.send({ ...makeRequest(4, 'eth_requestAccounts', []), gesture: true });   // a page's own word is dropped
   await tick();
-  assert.deepEqual(h.calls.map((c) => c.gesture), [true, false, false]);
-});
-
-test('ignored messages do not use up the gesture; a late first request gets none', async () => {
-  let t = 0;
-  const h = setup({ now: () => t, gestureWindowMs: 10_000 });
-  h.send(makeRequest(1, 'eth_requestAccounts', []), 'https://evil.com');
-  t = 10_001;
-  h.send(makeRequest(2, 'eth_requestAccounts', []));
-  await tick();
-  assert.deepEqual(h.calls.map((c) => c.gesture), [false]);
-});
-
-/** Minimal sessionStorage: one per popup window, kept across hub reloads. */
-function fakeSession() {
-  const data = new Map();
-  return { getItem: (k) => (data.has(k) ? data.get(k) : null), setItem: (k, v) => { data.set(k, String(v)); }, data };
-}
-
-test('a hub reloaded by its opener hands out no new gesture', async () => {
-  // The opener can reload its popup without a click (popup.location = …). Without the first-load mark the
-  // reloaded hub would treat the next request as the click that opened it.
-  const session = fakeSession();
-  const first = setup({ gestureAvailable: claimFirstLoad(session) });
-  first.send(makeRequest(1, 'eth_requestAccounts', []));
-  await tick();
-  first.channel.stop();
-  const reloaded = setup({ gestureAvailable: claimFirstLoad(session) });
-  reloaded.send(makeRequest(1, 'eth_requestAccounts', []));
-  await tick();
-  assert.deepEqual([first.calls[0].gesture, reloaded.calls[0].gesture], [true, false]);
-});
-
-test('claimFirstLoad: true once per window; missing or broken storage gives false', () => {
-  const session = fakeSession();
-  assert.equal(claimFirstLoad(session), true);
-  assert.equal(session.data.get(FIRST_LOAD_KEY), '1');
-  assert.equal(claimFirstLoad(session), false);
-  assert.equal(claimFirstLoad(fakeSession()), true, 'a new popup window starts fresh');
-  assert.equal(claimFirstLoad(null), false);
-  assert.equal(claimFirstLoad({ getItem() { throw new Error('SecurityError'); }, setItem() {} }), false);
-  assert.equal(claimFirstLoad({ getItem: () => null, setItem() { throw new Error('QuotaExceededError'); } }), false);
-  assert.equal(claimFirstLoad({ getItem: () => null, setItem() {} }), false, 'a write that does not stick is not trusted');
-});
-
-test('gestureAllowed false (the extension is here): the first request is no gesture either, and uses it up (audit 2026-10-18 issue 3)', async () => {
-  let extension = false;
-  const h = setup({ gestureAllowed: () => !extension });
-  extension = true;   // read when the request arrives, not when the channel starts
-  h.send(makeRequest(1, 'eth_requestAccounts', []));
-  extension = false;
-  h.send(makeRequest(2, 'eth_requestAccounts', []));
-  await tick();
-  assert.deepEqual(h.calls.map((c) => c.gesture), [false, false]);
-  for (const gestureAllowed of [() => 'yes', () => { throw new Error('x'); }]) {
-    const g = setup({ gestureAllowed });
-    g.send(makeRequest(1, 'eth_requestAccounts', []));
-    await tick();
-    assert.equal(g.calls[0].gesture, false, 'only a literal true allows it');
-  }
-  const ok = setup({ gestureAllowed: () => true });
-  ok.send(makeRequest(1, 'eth_requestAccounts', []));
-  await tick();
-  assert.equal(ok.calls[0].gesture, true);
-});
-
-test('gestureAvailable must be literally true', async () => {
-  for (const gestureAvailable of [false, 'true', 1]) {
-    const h = setup({ gestureAvailable });
-    h.send(makeRequest(1, 'eth_requestAccounts', []));
-    await tick();
-    assert.equal(h.calls[0].gesture, false, String(gestureAvailable));
-  }
+  assert.deepEqual(h.calls.map((c) => c.gesture), [false, false, false, false]);
 });
 
 test('thrown non-RPC errors become -32603 and are reported', async () => {

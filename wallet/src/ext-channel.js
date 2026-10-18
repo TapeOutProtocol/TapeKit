@@ -13,7 +13,7 @@
 //     `hub-ready` that tells the relay to connect: without the extension, the hub posts nothing else.
 //
 // Same interface as the popup channel for the hub's fan-out: { emit(origin, event, data) → bool, pending(),
-// stop() }, plus publish(snapshot), requestClose(), requestFocus(), isManaged(), present() and inPopupWindow().
+// stop() }, plus publish(snapshot), requestClose(), requestFocus(), isManaged() and inPopupWindow().
 // inPopupWindow() is the background's word (it asks chrome.windows for the type of the hub's window): the page
 // cannot tell, since window.toolbar.visible reads true in an extension's popup window (measured 2026-10-16).
 // `beforeReply` runs right before each answer is posted: the hub publishes its grants there, so the extension
@@ -112,8 +112,6 @@ export function createExtChannel({
     requestClose: () => (connected && managed ? post({ type: 'close' }) : false),
     requestFocus: () => (connected && managed ? post({ type: 'focus' }) : false),
     isManaged: () => connected && managed,
-    /** The extension's relay said hello: the TapeKit extension is installed and routes this gateway. */
-    present: () => connected,
     /** The extension says this hub runs in a popup-type window. */
     inPopupWindow: () => connected && popup,
     pending: () => pending,

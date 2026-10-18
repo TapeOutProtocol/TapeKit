@@ -6,13 +6,7 @@ import { fakeEvent, fakePortPair, EXT_ID } from './fake-chrome.mjs';
 export function fakeWindow(href, { top = true, userActive = false } = {}) {
   const url = new URL(href);
   let listeners = new Set();
-  let attrs = new Map();   // document.documentElement's attributes
   const win = {
-    document: { documentElement: {
-      setAttribute: (k, v) => { attrs = new Map(attrs).set(k, String(v)); },
-      hasAttribute: (k) => attrs.has(k),
-      getAttribute: (k) => (attrs.has(k) ? attrs.get(k) : null),
-    } },
     location: { href: url.href, origin: url.origin, protocol: url.protocol, hostname: url.hostname, pathname: url.pathname, port: url.port, hash: url.hash },
     navigator: { language: 'en', userActivation: { isActive: userActive, hasBeenActive: userActive } },
     posted: [],
