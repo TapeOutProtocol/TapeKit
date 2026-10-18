@@ -24,7 +24,7 @@ import { ROUTING_KEY } from '../extension/routing.js';
 import { SNAPSHOT_KEY } from '../extension/snapshot.js';
 import { startBrowser, until, sleep } from './e2e-cdp.mjs';
 import { runEnableChecks } from './e2e-extension-enable.mjs';
-import { writeFakeWalletExtension, tabsState, hubWindow, typedData, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE } from './e2e-pages.mjs';
+import { writeFakeWalletExtension, tabsState, hubWindow, typedData, siweFor, permitData, cardOnScreen, CARD_LAYOUT, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE } from './e2e-pages.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SITE_A = { name: '433.0.tape', label: '433-0' };
@@ -217,6 +217,27 @@ try {
     fwd.length === 1 && fwd[0].focused === false && fwd[0].refused === false && refusedCalls().length === 0 && walletCalls('wallet_switchEthereumChain') === 0, J(fwd[0]));
   await waitNoHub();
   check('the window closes after signing and the browser is back on A\'s tab', !!(await backOn(SITE_A)) && (await popupWindows()).length === 0);
+
+  // ---- 3a. The card keeps the requesting site on screen (audit 2026-10-18 issue 1): a sign-in message for another
+  // site at 400×580 and a token Permit at 1280×650, both in the small window. Rejected, so nothing is signed.
+  async function cardLayout(key, method, params, size) {
+    b.nextPageSize(size);
+    await clickCall(a, key, method, params);
+    const hub = await cardHub();
+    const layout = await ev(hub, CARD_LAYOUT);
+    await b.click(hub.sessionId, REJECT_BTN);
+    const res = await result(a, key);
+    await waitNoHub();
+    await backOn(SITE_A);
+    return { layout, rejected: !!res.error && res.error.code === 4001 };
+  }
+  const siweCard = await cardLayout('siwe', 'personal_sign', ['0x' + Buffer.from(siweFor('app.uniswap.org')).toString('hex'), FAKE_ACCOUNT], { width: 400, height: 580 });
+  check('issue 1: a 10-line sign-in message for another site at 400×580: title, identity rows and the warning on screen; no header, no site list',
+    cardOnScreen(siweCard.layout, [400, 580], true) && siweCard.rejected, J(siweCard));
+  const permitCard = await cardLayout('permit', 'eth_signTypedData_v4', [FAKE_ACCOUNT, permitData(56)], { width: 1280, height: 650 });
+  check('issue 1: a Permit card at 1280×650: title and identity rows on screen; no header, no site list',
+    cardOnScreen(permitCard.layout, [1280, 650], false) && permitCard.rejected && walletCalls('personal_sign') === 1 && walletCalls('eth_signTypedData_v4') === 0, J(permitCard));
+
 
   // ---- 3b. AC7: a chain switch goes through the hub (no focus); chainChanged reaches A; the snapshot has the chain
   await call(a, 'sw1', 'wallet_switchEthereumChain', [{ chainId: '0xc4' }]);

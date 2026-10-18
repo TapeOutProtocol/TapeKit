@@ -3,6 +3,10 @@
 // title (SPEC §7.4). Clickjacking defenses: the hub cannot be framed (header CSP), the affirmative button is
 // enabled only after the window has been focused and visible for 600 ms (re-armed on blur or hide), and the
 // default focus is on "Reject". "Reject" stays enabled so it can hold that focus; triggering it is harmless.
+// The identity rows and the SIWE warning must be on screen when a card opens: they are the only place that names
+// the requesting site (the wallet shows the hub's origin for every site). So focusing "Reject" must not scroll
+// to the buttons, the page header and the authorized-sites list (which names other sites) are hidden while a
+// card is open (body.asking, hub.css), and the card's top is scrolled into view.
 import { el, rows } from './dom.js';
 import { tr } from '/.tape/wallet/src/i18n.js';
 import { describeSign } from '/.tape/wallet/src/describe.js';
@@ -69,16 +73,19 @@ export function createCards({ doc, win, lang, hubHost }) {
         doc.removeEventListener('keydown', onKey);
         cardBox.replaceChildren();
         cardBox.hidden = true;
+        doc.body.classList.remove('asking');
         resolve(answer);
       }
       reject.addEventListener('click', () => finish('reject'));
       ok.addEventListener('click', () => { if (!ok.disabled) finish('ok'); });
       cardBox.replaceChildren(el(doc, 'h2', { text: title }), ...body, el(doc, 'div', { class: 'actions' }, reject, ok));
+      doc.body.classList.add('asking');
       cardBox.hidden = false;
       closeCard = finish;
       ungate = gate(ok);
       doc.addEventListener('keydown', onKey);
-      reject.focus();
+      reject.focus({ preventScroll: true });
+      cardBox.scrollIntoView({ block: 'start' });
     });
   }
 

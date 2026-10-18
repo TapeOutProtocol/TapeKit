@@ -6,6 +6,8 @@
 // With `extensionPath` (one path or a list), extensions are enabled and those unpacked extensions are loaded
 // over CDP (Extensions.loadUnpacked, needs --enable-unsafe-extension-debugging; works on branded Chrome 137+,
 // where the --load-extension flag is ignored). Service worker sessions are listed in `workers`.
+// nextPageSize({ width, height }) gives the next page that opens that viewport (Emulation.setDeviceMetricsOverride,
+// set before its first script runs), for the hub card layout checks.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -52,6 +54,7 @@ export async function startBrowser({ pageScripts, binding, extensionPath = null 
   const workers = [];            // { targetId, sessionId, url, closed } of service workers (gateway and extension)
   const bindingCalls = [];       // { sessionId, payload }
   const errors = [];             // { sessionId, text }: uncaught exceptions, console.error, error log entries
+  let nextSize = null;           // viewport for the next page that attaches (nextPageSize)
   const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
     const id = ++seq;
     waiting.set(id, { res, rej });
@@ -66,6 +69,11 @@ export async function startBrowser({ pageScripts, binding, extensionPath = null 
       await send('Runtime.addBinding', { name: binding }, s);
       for (const source of pageScripts) await send('Page.addScriptToEvaluateOnNewDocument', { source }, s);
       await send('Emulation.setFocusEmulationEnabled', { enabled: true }, s);
+      if (nextSize) {
+        const { width, height } = nextSize;
+        nextSize = null;
+        await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, s);
+      }
       await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, s);
     } finally {
       await send('Runtime.runIfWaitingForDebugger', {}, s).catch(() => {});
@@ -158,5 +166,7 @@ export async function startBrowser({ pageScripts, binding, extensionPath = null 
     try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* left for the OS */ }
   }
 
-  return { send, pages, frames, workers, bindingCalls, errors, extensionId, extensionIds, evaluate, inWorker, click, newTab, navigate, close };
+  const nextPageSize = (size) => { nextSize = size; };
+
+  return { send, pages, frames, workers, bindingCalls, errors, extensionId, extensionIds, evaluate, inWorker, click, newTab, navigate, nextPageSize, close };
 }

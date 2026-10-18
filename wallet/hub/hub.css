@@ -10,9 +10,12 @@ p { margin: 0 0 12px; }
 [hidden] { display: none !important; }
 .hint { color: #536471; font-size: 14px; }
 .mono, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
-pre { white-space: pre-wrap; word-break: break-all; background: #f7f9f9; border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; max-height: 220px; overflow: auto; }
+/* At most ~30% of the window, so the identity rows, the warning and the buttons of a card fit in the small window. */
+pre { white-space: pre-wrap; word-break: break-all; background: #f7f9f9; border-radius: 12px; padding: 10px 12px; margin: 0 0 12px; max-height: min(220px, 30vh); overflow: auto; }
 
 .panel { margin: 18px 0; }
+/* A card is open (cards.js): nothing above it, and no list of other sites' names next to it. */
+body.asking header, body.asking #sites { display: none; }
 .card { background: #f7f9f9; border-radius: 18px; padding: 16px 18px; margin: 16px 0; }
 .card pre { background: #fff; }
 

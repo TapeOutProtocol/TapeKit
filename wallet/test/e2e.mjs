@@ -17,7 +17,7 @@ import server from '../../sw-gateway/dev-server.mjs';
 import { createKernel } from '../../kernel/src/index.js';
 import { readNodes } from '../src/chains.js';
 import { startBrowser, until, sleep } from './e2e-cdp.mjs';
-import { writeFakeWalletExtension, tabsState, hubWindow, typedData, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE } from './e2e-pages.mjs';
+import { writeFakeWalletExtension, tabsState, hubWindow, typedData, siweFor, permitData, cardOnScreen, CARD_LAYOUT, MARKER, PAGE_HELPER, BINDING, FAKE_ACCOUNT, FAKE_SIGNATURE } from './e2e-pages.mjs';
 
 // Mainnet sites, all checked with the kernel on 2026-10-08 (research/live-sites.md). Swap them here if one lapses.
 const SITE_A = { name: '433.0.tape', label: '433-0' };
@@ -180,6 +180,27 @@ try {
   check('forged replies from the page itself and from an opaque-origin frame are ignored', sign1.result === FAKE_SIGNATURE
     && !(await events(a)).some(([, d]) => J(d).includes(OTHER_ACCOUNT)));
   check('D-i the popup window closes by itself when done', !!(await waitHubClosed(a)));
+
+  // ---- 3a. The card keeps the requesting site on screen (audit 2026-10-18 issue 1): a sign-in message for another
+  // site in the small window (400×580) and a token Permit in a tab (1280×650). Rejected, so nothing is signed.
+  async function cardLayout(key, method, params, size) {
+    b.nextPageSize(size);
+    await clickCall(a, key, method, params);
+    const hub = await hubOf(a);
+    await waitCard(hub);
+    const layout = await ev(hub, CARD_LAYOUT);
+    await b.click(hub.sessionId, REJECT_BTN);
+    const res = await result(a, key);
+    await waitHubClosed(a);
+    return { layout, rejected: !!res.error && res.error.code === 4001 };
+  }
+  const siweCard = await cardLayout('siwe', 'personal_sign', ['0x' + Buffer.from(siweFor('app.uniswap.org')).toString('hex'), FAKE_ACCOUNT], { width: 400, height: 580 });
+  check('issue 1: a 10-line sign-in message for another site at 400×580: title, identity rows and the warning on screen; no header, no site list',
+    cardOnScreen(siweCard.layout, [400, 580], true) && siweCard.rejected, J(siweCard));
+  const permitCard = await cardLayout('permit', 'eth_signTypedData_v4', [FAKE_ACCOUNT, permitData(56)], { width: 1280, height: 650 });
+  check('issue 1: a Permit card at 1280×650: title and identity rows on screen; no header, no site list',
+    cardOnScreen(permitCard.layout, [1280, 650], false) && permitCard.rejected && signs().length === 1, J(permitCard));
+
 
   // ---- 4. AC6 wrong signer, AC7 chains
   await clickCall(a, 'sign2', 'personal_sign', [msgHex, OTHER_ACCOUNT]);

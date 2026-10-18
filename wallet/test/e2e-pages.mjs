@@ -24,6 +24,8 @@
 //   writeFakeWalletExtension(dir, hubHost)  fakeWallet + hubProbe + the focus check, packed as a wallet extension;
 //                        its background also has tabsState() for the suites' tab and window checks
 //   hubWindow(…)         the window a hub page runs in (type, own window, size); typedData(chainId) for signatures
+//   siweFor(domain), permitData(chainId)   the two cards most likely to be phished (a sign-in message for
+//                        another site, a token Permit); CARD_LAYOUT  where the card's parts are on screen
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -190,6 +192,36 @@ export async function hubWindow(b, extensionId, hubPage, sitePage) {
   const tab = (await tabsState(b, extensionId)).find((t) => t.windowId === windowId) || null;
   return { type: tab ? tab.windowType : null, ownWindow: windowId !== site.windowId, width: bounds.width, height: bounds.height };
 }
+
+/** A 10-line EIP-4361 sign-in message for `domain` (the audit's example: app.uniswap.org). */
+export const siweFor = (domain) => [`${domain} wants you to sign in with your Ethereum account:`, FAKE_ACCOUNT, '', 'Sign in to Uniswap', '',
+  `URI: https://${domain}`, 'Version: 1', 'Chain ID: 1', 'Nonce: 8f3a2c1d', 'Issued At: 2026-10-18T00:00:00Z'].join('\n');
+
+/** A USDC-style EIP-2612 Permit for an unlimited amount, bound to `chainId`. */
+export const permitData = (chainId) => JSON.stringify({
+  types: {
+    EIP712Domain: [{ name: 'name', type: 'string' }, { name: 'version', type: 'string' }, { name: 'chainId', type: 'uint256' }, { name: 'verifyingContract', type: 'address' }],
+    Permit: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }, { name: 'value', type: 'uint256' }, { name: 'nonce', type: 'uint256' }, { name: 'deadline', type: 'uint256' }],
+  },
+  primaryType: 'Permit', domain: { name: 'USD Coin', version: '2', chainId, verifyingContract: '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d' },
+  message: { owner: FAKE_ACCOUNT, spender: '0x' + '22'.repeat(20), value: (2n ** 256n - 1n).toString(), nonce: 0, deadline: 1799999999 },
+});
+
+/**
+ * Evaluated in a hub page with a card open: the viewport, and for the card's title, identity rows and warning
+ * whether they lie fully inside it; whether the page header and the authorized-sites list are shown.
+ */
+export const CARD_LAYOUT = `(() => {
+  const at = (sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect();
+    return { top: Math.round(r.top), bottom: Math.round(r.bottom), onScreen: r.height > 0 && r.top >= 0 && r.bottom <= innerHeight }; };
+  const shown = (sel) => { const e = document.querySelector(sel); return !!e && e.getClientRects().length > 0; };
+  return { viewport: [innerWidth, innerHeight], scrollY: Math.round(scrollY), title: at('#card h2'), identity: at('#card dl.rows'), warning: at('#card .warn'),
+    header: shown('header'), sites: shown('#sites') };
+})()`;
+
+/** A CARD_LAYOUT reading of `viewport` has the title, the identity rows and (`warning`) the warning on screen, and no header or site list. */
+export const cardOnScreen = (l, viewport, warning) => !!l && l.viewport.join() === viewport.join() && !!l.title && l.title.onScreen && !!l.identity && l.identity.onScreen
+  && (!warning || (!!l.warning && l.warning.onScreen)) && !l.header && !l.sites;
 
 /** EIP-712 typed data for the e2e signatures (eth_signTypedData_v4), bound to `chainId`. */
 export const typedData = (chainId) => JSON.stringify({
