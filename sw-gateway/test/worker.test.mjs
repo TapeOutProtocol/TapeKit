@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import worker from '../worker.js';
 import { HUB_CSP } from '../hub-route.js';
+import { DOC_CSP, isReservedSitePath } from '../serve.js';
 
 const SANDBOX = "default-src 'none'; sandbox";
 const FILES = {
@@ -74,16 +75,30 @@ test('root host: hub scripts, styles and modules are static files with nosniff a
   }
 });
 
-test('site subdomains never get the hub: /.tape/wallet/* is the bootstrap page under the sandbox CSP, as before', async () => {
-  const hosts = ['https://4246-0.tapekit.org', 'https://1-2-344.tapekit.org', 'https://01-0.tapekit.org', 'https://tapekit.org.', 'https://4246-0.tapekit.org.', 'http://4246-0.localhost:8096'];
+test('site subdomains never get the hub, nor anything else at its path: a script-free notice (404) that names the real hub', async () => {
+  // Audit 2026-10-18 issue 6: a site's own file at /.tape/wallet/ could pose as the hub at an address users are
+  // taught to trust. The compat tier (-open) would have served it from chain; the self-verifying tier's bootstrap
+  // would have installed the Service Worker, which then served it (sw.js checks the same rule).
+  const hosts = ['https://4246-0.tapekit.org', 'https://1-2-344.tapekit.org', 'https://01-0.tapekit.org', 'https://4246-0-open.tapekit.org', 'https://tapekit.org.', 'https://4246-0.tapekit.org.', 'http://4246-0.localhost:8096'];
   for (const host of hosts) {
-    for (const path of ['/.tape/wallet/', '/.tape/wallet/index.html', '/.tape/wallet/hub.js', '/.tape/wallet/src/router.js']) {
+    for (const path of ['/.tape/wallet/', '/.tape/wallet', '/.tape/wallet/index.html', '/.tape/wallet/hub.js', '/.tape/wallet/src/router.js', '/.tape/WALLET/', '/.tape/%77allet/', '/.tape/wallet%2Findex.html']) {
       const r = await get(host + path);
-      assert.equal(r.body, 'BOOT', host + path);
-      assert.equal(r.csp, SANDBOX, host + path);
-      assert.notEqual(r.csp, HUB_CSP);
+      assert.equal(r.status, 404, host + path);
+      assert.equal(r.csp, DOC_CSP, host + path);
+      assert.match(r.body, /\/\.tape\/wallet\//, host + path);
+      assert.doesNotMatch(r.body, /<script/i);
+      assert.deepEqual(r.seen, [], 'nothing fetched: not the bootstrap, not the chain');
     }
   }
+  const named = await get('https://4246-0.tapekit.org/.tape/wallet/');
+  assert.match(named.body, /https:\/\/tapekit\.org\/\.tape\/wallet\//);
+  const dev = await get('http://4246-0.localhost:8096/.tape/wallet/');
+  assert.match(dev.body, /http:\/\/localhost:8096\/\.tape\/wallet\//);
+});
+
+test('isReservedSitePath: the hub path in any spelling a browser or a server may map to it', () => {
+  for (const p of ['/.tape/wallet', '/.tape/wallet/', '/.tape/wallet/x.js', '/.tape/Wallet/', '/.tape/%77allet/', '/.tape/wallet%2F']) assert.equal(isReservedSitePath(p), true, p);
+  for (const p of ['/', '/.tape/status', '/.tape/walletx', '/wallet/', '/.tape/kernel/index.js', '/a/.tape/wallet/', '/%zz']) assert.equal(isReservedSitePath(p), false, p);
 });
 
 test('everything else is unchanged', async () => {

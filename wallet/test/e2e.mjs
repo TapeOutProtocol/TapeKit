@@ -370,6 +370,13 @@ try {
   })`);
   check('AC8 frames inside a site get no TapeKit wallet although the client runs in them (same-origin frame, sandboxed frame)', frames.same && frames.same.injected
     && frames.same.tapekit === 'undefined' && frames.sandboxed && frames.sandboxed.injected && frames.sandboxed.tapekit === 'undefined', J(frames));
+  // Audit 2026-10-18 issue 6: on a site host the hub's path is the gateway's. With A's Service Worker installed,
+  // /.tape/wallet/ there is a script-free notice naming the real hub, never the site's own file or a hub.
+  await b.navigate(misc, siteUrl(SITE_A) + '.tape/wallet/');
+  await until(() => ev(misc, `document.readyState === 'complete' && !!navigator.serviceWorker.controller`));
+  const reserved = await ev(misc, `({ text: document.body.innerText, scripts: document.scripts.length, hub: !!window.__hubLog })`);
+  check('issue 6: /.tape/wallet/ on a site host (through its Service Worker) is the gateway\'s notice naming the real hub, not a site file or a hub',
+    has(reserved.text, HUB) && (has(reserved.text, 'TapeKit 钱包不在这个地址') || has(reserved.text, 'The TapeKit wallet is not at this address')) && reserved.scripts === 0 && !reserved.hub, J(reserved));
   // The look-alike page sends no CSP, so only the hub's own frame-ancestors can stop it framing the hub
   // (a site page's frame-src would already refuse an http hub). The gateway root frame is the control.
   await b.navigate(misc, `http://${SITE_A.label}.localhost:${lookAlike.address().port}/`);

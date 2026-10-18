@@ -10,7 +10,7 @@
 
 import { createKernel, createIdbCache, createMemoryCache, InputError, RpcError, scanHtml, scanCss, setLocale, statusText, BSC_MAINNET, formatName, parseHostLabel, networkByArea, networkByChainId, siteNodes } from './.tape/kernel/index.js';
 import { statusPage, messagePage, pickLocale, tr } from './.tape/pages.js';
-import { SITE_CSP, LOCKED_CSP, GATEWAY_PATHS as NETWORK_PATHS, OPEN_SUFFIX, docPage as html, withCharset, isHtml, isCss, fileResponse } from './.tape/serve.js';
+import { SITE_CSP, LOCKED_CSP, GATEWAY_PATHS as NETWORK_PATHS, OPEN_SUFFIX, docPage as html, withCharset, isHtml, isCss, fileResponse, isReservedSitePath, hubAddressFor } from './.tape/serve.js';
 
 const VERSION = '0.3.0';   // 0.3.0：链外访问放行并记录，脚本只能来自链上；0.2.0：三链（区号）、网站 CSP、去掉可被网站改写的节点设置
 const SETTINGS_KEY = 'gw-settings:v1';
@@ -143,6 +143,9 @@ async function own(e, url) {
     if (url.pathname === '/' || url.pathname === '/index.html') return fetch(req);
     return html(messagePage({ locale, kind: 'bad-host', host: url.hostname, vars: { root: url.hostname } }), 400);
   }
+  // The wallet hub's path is the gateway's on site hosts too (serve.js isReservedSitePath, audit 2026-10-18 issue 6):
+  // never the site's own file there, which could pose as the hub.
+  if (isReservedSitePath(url.pathname)) return html(messagePage({ locale, kind: 'wallet-reserved', host: url.hostname, vars: { hub: hubAddressFor(url) } }), 404);
   await refreshBlocklist();
   let h;
   try { h = await siteFor(label.name, { fresh: url.searchParams.has('tape-reload') && req.mode === 'navigate' }); }

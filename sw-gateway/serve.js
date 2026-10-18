@@ -19,6 +19,25 @@ export const GATEWAY_PATHS = /^\/(sw\.js$|\.tape\/(kernel\/|boot\.js$|pages\.js$
 export const OPEN_SUFFIX = '-open';
 
 /**
+ * The wallet hub's path (hub-route.js) is reserved on every host but the gateway root: neither tier serves a
+ * site's own file there (sw.js, worker.js), only a script-free notice. A site could otherwise put a look-alike hub
+ * at https://<site>.<gateway>/.tape/wallet/, one label away from the address users are taught to trust (audit
+ * 2026-10-18 issue 6). Checked on the decoded path, any case, with or without the trailing slash.
+ */
+const RESERVED_SITE_PATH = /^\/\.tape\/wallet(\/|$)/i;
+export function isReservedSitePath(pathname) {
+  let p = String(pathname);
+  try { p = decodeURIComponent(p); } catch { /* a broken %xx: test it as it is */ }
+  return RESERVED_SITE_PATH.test(p);
+}
+/** The real hub for a request on a site host: the same scheme and port, the site label (and a trailing dot) dropped. */
+export function hubAddressFor(url) {
+  const labels = url.hostname.replace(/\.$/, '').split('.');
+  const root = /^[0-9]+(-[0-9]+){1,2}(-open)?$/.test(labels[0]) ? labels.slice(1).join('.') : labels.join('.');
+  return `${url.protocol}//${root}${url.port ? ':' + url.port : ''}/.tape/wallet/`;
+}
+
+/**
  * 网站文件的内容安全策略。链外的数据可以访问：接口、图片、字体、样式、视频流、WebSocket、嵌入的播放器和
  * 钱包连接（WalletConnect 要连它的中继和验证页）——这些是网站能做起来的前提。
  * 但网站的代码只能来自链上：script-src 不放任何链外地址，Worker 只能是同源或 blob。
