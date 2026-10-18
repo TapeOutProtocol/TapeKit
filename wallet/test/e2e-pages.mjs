@@ -150,16 +150,23 @@ const GATE_RELAY = `(() => {
 //   Each check reads the active tabs and the last focused window, and remembers that window (IXa) unless it is a
 //   'popup' (or an active tab is on link.x.immutable.com). A request passes only if its tab is an active tab
 //   and, while that window has focus, sits in the remembered window (or the last focused one before any was
-//   remembered). A failed check counts as focused, as in OKX. OKX's provider runs in every page, so a real
-//   browser remembers a normal window as soon as any site talks to it; this fake runs only in the hub, whose
-//   first wallet call in both suites comes from a hub tab.
+//   remembered). A failed check counts as focused, as in OKX.
+//   Start state: OKX's provider runs in every page, so in a real browser some ordinary page has talked to it, and
+//   it has remembered that normal window, long before a hub does. This fake runs only in hub pages, so it starts
+//   from that state (seedRemembered: the last focused normal window) instead of from nothing. From nothing, a hub
+//   in a popup window passed the first check, and the old popup-hub code passed both suites (audit 2026-10-18
+//   issue 7).
 const TABS_STATE = `self.tabsState = async () => (await chrome.windows.getAll({ populate: true })).map((w) => ({
   id: w.id, type: w.type, focused: w.focused,
   tabs: w.tabs.map((t) => ({ id: t.id, index: t.index, active: t.active, url: t.url || t.pendingUrl || '', openerTabId: t.openerTabId ?? null })),
 }));`;
 const WALLET_BACKGROUND = `${TABS_STATE}
 let remembered = null;
+async function seedRemembered() {
+  if (!remembered) remembered = await chrome.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
+}
 async function isFocusedTab(tabId) {
+  await seedRemembered();
   const [tabs, win] = await Promise.allSettled([chrome.tabs.query({ active: true }), chrome.windows.getLastFocused()]);
   const active = tabs.value, last = win.value;
   const immutable = ['link.x.immutable.com'].some((u) => active?.some((t) => t?.url?.includes(u)));
