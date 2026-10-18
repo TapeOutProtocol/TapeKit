@@ -88,6 +88,31 @@ test('gateway change: same gateway → nothing; covered by granted access → re
   assert.equal(await syncRouting(chrome, 'tapekit.org'), 'off');
 });
 
+test('extension reload or update drops the registered scripts: sync registers them again, without a click (audit 2026-10-18 issue 5)', async () => {
+  const chrome = fakeChrome();
+  await enableRouting(chrome, 'tapekit.org');
+  await chrome.scripting.unregisterContentScripts({ ids: [...SCRIPT_IDS] });   // what Chrome did on reload (m2-reload.txt)
+  assert.equal(await syncRouting(chrome, 'tapekit.org'), 'on');
+  assert.deepEqual(await registered(chrome), [...SCRIPT_IDS]);
+  await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_IDS[2]] });   // one missing
+  assert.equal(await syncRouting(chrome, 'tapekit.org'), 'on');
+  assert.deepEqual((await registered(chrome)).sort(), [...SCRIPT_IDS].sort());
+  const [inpage] = await chrome.scripting.getRegisteredContentScripts({ ids: [SCRIPT_IDS[0]] });
+  assert.deepEqual(inpage.matches, ['https://*.tapekit.org/*']);
+  assert.equal(chrome.log.requested.length, 1, 'access was already granted: no new permission request');
+  assert.deepEqual(await state(chrome), { gateway: 'tapekit.org' });
+});
+
+test('sync leaves complete registrations alone', async () => {
+  const chrome = fakeChrome();
+  await enableRouting(chrome, 'tapekit.org');
+  let writes = 0;
+  const register = chrome.scripting.registerContentScripts;
+  chrome.scripting.registerContentScripts = async (list) => { writes += 1; return register(list); };
+  assert.equal(await syncRouting(chrome, 'tapekit.org'), 'on');
+  assert.equal(writes, 0);
+});
+
 test('host access removed in Chrome\'s settings → routing off', async () => {
   const chrome = fakeChrome();
   await enableRouting(chrome, 'tapekit.org');

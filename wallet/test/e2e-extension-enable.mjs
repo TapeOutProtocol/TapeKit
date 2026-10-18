@@ -2,6 +2,8 @@
 // users take (the main part uses the --test build with static content scripts). It loads a copy of the normal
 // build (dist/extension) whose only change is install-time access to http://*.localhost, so that
 // chrome.permissions.request resolves without Chrome's dialog (it does when the access is already granted).
+// Then the extension is reloaded the way an update or chrome://extensions "reload" does (Extensions.loadUnpacked
+// on the same path), which drops dynamically registered scripts: routing must come back on its own.
 // Offline: a plain local page server stands in for the gateway; no chain reads.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -55,8 +57,16 @@ export async function runEnableChecks({ root, check }) {
       JSON.stringify(list) === JSON.stringify(['tapekit-wallet-inpage:MAIN', 'tapekit-wallet-relay:ISOLATED', 'tapekit-wallet-hub-relay:ISOLATED']), JSON.stringify(list));
     check('enable: the gateway\'s sites now get the TapeKit wallet; the root and /.tape/* do not',
       await walletOn(`http://433-0.${gateway}/`) && !(await walletOn(`http://${gateway}/`)) && !(await walletOn(`http://433-0.${gateway}/.tape/status`)));
-    await until(() => ev(pop, `document.getElementById('wallet-toggle').textContent === '停用钱包路由'`));
-    await b.click(pop.sessionId, '#wallet-toggle');
+    // An update or reload drops the registrations; onInstalled → syncRouting registers them again (audit
+    // 2026-10-18 issue 5: before, routing stayed "on" with no scripts and no site got the wallet).
+    const reloaded = await b.send('Extensions.loadUnpacked', { path: dir });
+    const back = await until(async () => { const l = await registered(); return l.length === 3 ? l : null; }, 20_000);
+    check('reload/update: the extension registers its three scripts again by itself, and sites get the wallet again (no click)',
+      reloaded.id === b.extensionId && !!back && await walletOn(`http://433-0.${gateway}/`), JSON.stringify(back));
+    const pop2 = await b.newTab();   // the old popup tab closed with the old extension instance
+    await b.navigate(pop2, EXT + 'popup/popup.html');
+    await until(() => ev(pop2, `document.getElementById('wallet-toggle').textContent === '停用钱包路由'`));
+    await b.click(pop2.sessionId, '#wallet-toggle');
     await until(async () => (await registered()).length === 0);
     check('disable: the scripts are unregistered and sites get no wallet again', J0(await registered()) && !(await walletOn(`http://433-0.${gateway}/`)));
   } catch (e) {

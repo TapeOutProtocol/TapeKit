@@ -88,6 +88,13 @@ async function registerScripts(chrome, info) {
   await chrome.scripting.registerContentScripts(contentScriptsFor(info));
 }
 
+/** All three scripts are registered, each for this gateway's patterns. */
+async function scriptsInPlace(chrome, info) {
+  const ours = await chrome.scripting.getRegisteredContentScripts({ ids: [...SCRIPT_IDS] });
+  const same = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
+  return contentScriptsFor(info).every((want) => ours.some((s) => s.id === want.id && same(s.matches, want.matches) && same(s.excludeMatches, want.excludeMatches)));
+}
+
 const sameOrigins = (a, b) => !!a && !!b && a.scheme === b.scheme && a.host === b.host;
 
 /** Give back the old gateway's host access (least privilege). Required host permissions cannot be removed. */
@@ -127,9 +134,12 @@ export async function disableRouting(chrome) {
 }
 
 /**
- * Background: the gateway setting changed or host access was removed. Same gateway with access → nothing to
- * do (registrations persist across sessions). A new gateway already covered by granted access → re-register
- * for it. Otherwise routing is turned off until the user enables it again (that needs a click).
+ * Background: start-up, install or update, the gateway setting changed, or host access was removed. Same
+ * gateway with access → make sure the scripts are registered: registrations persist across browser sessions,
+ * but an extension reload or update drops them (measured 2026-10-18, Chrome 155: routing still said "on" and no
+ * site got the wallet), and access is already granted, so no click is needed. A new gateway already covered by
+ * granted access → re-register for it. Otherwise routing is turned off until the user enables it again (that
+ * needs a click).
  * @returns {Promise<'off'|'on'>}
  */
 export async function syncRouting(chrome, gateway) {
@@ -138,7 +148,10 @@ export async function syncRouting(chrome, gateway) {
   const info = gatewayInfo(gateway);
   const old = gatewayInfo(state.gateway);
   const covered = !!info && await chrome.permissions.contains({ origins: originsFor(info) });
-  if (covered && state.gateway === info.gateway) return 'on';
+  if (covered && state.gateway === info.gateway) {
+    if (!(await scriptsInPlace(chrome, info))) await registerScripts(chrome, info);
+    return 'on';
+  }
   await unregisterScripts(chrome);
   if (covered) {
     await chrome.scripting.registerContentScripts(contentScriptsFor(info));
