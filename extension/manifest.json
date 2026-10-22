@@ -19,6 +19,10 @@
     "scripting",
     "storage"
   ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*.localhost/*"
+  ],
   "sandbox": {
     "pages": [
       "viewer/frame.html"

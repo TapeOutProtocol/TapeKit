@@ -6,7 +6,9 @@
 // 单独的子域名（地址栏上看得见自己在哪一档），而不是悄悄降级。两档共用 serve.js 里那一份响应头。
 import { createKernel, createMemoryCache, parseHostLabel, formatName, setLocale, statusText, InputError, KernelError } from '../kernel/src/index.js';
 import { messagePage, pickLocale } from './pages.js';
-import { OPEN_SUFFIX, GATEWAY_PATHS, LOCKED_CSP, docPage, fileResponse } from './serve.js';
+import { OPEN_SUFFIX, GATEWAY_PATHS, LOCKED_CSP, docPage, fileResponse, isReservedSitePath, hubAddressFor } from './serve.js';
+import { isRootHost } from './hub-route.js';
+import { hubRoute, HUB_CSP } from './hub-route.js';
 
 /** 4246-0-open.网关域名 → 链上名字 + 自验档的主机名；不是兼容档的主机名返回 null */
 function openHost(hostname) {
@@ -83,17 +85,33 @@ export default {
     const url = new URL(request.url);
     // 网站沙盒框架里的 CSP 违规报告不经过 Service Worker、会直接发到这里：不记录（里面可能带访客数据），直接 204
     if (url.pathname === '/.tape/csp-report') return new Response(null, { status: 204 });
+    // The wallet hub's path on any host but the root (serve.js isReservedSitePath): a notice, never the hub, the
+    // bootstrap or the site's own file, on both tiers.
+    if (!isRootHost(url.hostname) && isReservedSitePath(url.pathname)) {
+      const locale = pickLocale(request.headers.get('accept-language'));
+      return docPage(messagePage({ locale, kind: 'wallet-reserved', host: url.hostname, vars: { hub: hubAddressFor(url) } }), 404);
+    }
     const site = openHost(url.hostname);
     // 网关自己的那几个路径（/sw.js、/.tape/ 下的）两档都从服务器取，站点顶不掉；其余都走链
     if (site && !GATEWAY_PATHS.test(url.pathname)) {
       return fromChain(request, env, url, site).catch((err) => docPage(`<pre>${String(err?.message || err).replace(/</g, '&lt;')}</pre>`, 500));
     }
-    const res = await env.ASSETS.fetch(request);
+    // Wallet hub (/.tape/wallet/*, see hub-route.js): on the root host it is served as static files. Site hosts
+    // were answered with the notice above, so hub.kind 'site' is left only as a fallback to the bootstrap page.
+    const hub = hubRoute(url.hostname, url.pathname);
+    const asset = !hub ? null : hub.kind === 'site' ? '/index.html' : hub.path;
+    const res = await env.ASSETS.fetch(asset ? new Request(new URL(asset, url), request) : request);
     const h = new Headers(res.headers);
     h.set('x-content-type-options', 'nosniff');
     h.set('cache-control', 'no-cache');
+    // The hub is the one gateway page that runs scripts. Status and notice pages stay script-free
+    // (CONTRIBUTING), but the hub must run the router, resolve site identities and talk to the wallet
+    // extension. It gets its own locked-down CSP instead: scripts and styles from this origin only, no inline
+    // code, and frame-ancestors 'none' against clickjacking. Its scripts and modules keep nosniff and the
+    // sandbox CSP below (a CSP header on a script response does not affect the page that loads it).
+    if (hub && hub.kind === 'hub') h.set('content-security-policy', HUB_CSP);
     // 引导页（/、/index.html）要跑脚本，Service Worker 脚本（/sw.js）要读链，不加；其余静态文件被当成文档打开时什么都不许做
-    if (!['/', '/index.html', '/sw.js'].includes(url.pathname)) h.set('content-security-policy', LOCKED_CSP);
+    else if (!['/', '/index.html', '/sw.js'].includes(url.pathname)) h.set('content-security-policy', LOCKED_CSP);
     return new Response(res.body, { status: res.status, headers: h });
   },
 };

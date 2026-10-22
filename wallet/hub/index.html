@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<!-- TapeKit wallet hub (design §9). Served only on the gateway root at /.tape/wallet/. The real policy is the
+     header CSP from the gateway (it adds frame-ancestors 'none', which a meta tag cannot set); this copy keeps
+     the page locked down if it is ever served without that header. No inline script or style, no external
+     resources, and the page never registers a Service Worker. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; worker-src 'none'; base-uri 'none'; form-action 'none'">
+<title>TapeKit Wallet</title>
+<link rel="stylesheet" href="/.tape/wallet/hub.css">
+<script type="module" src="/.tape/wallet/hub.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">TapeKit Wallet</h1>
+    <p id="intro" class="hint"></p>
+  </header>
+  <section id="card" class="card" hidden></section>
+  <section id="wallet" class="panel" aria-live="polite"></section>
+  <p id="status" class="status" role="status" hidden></p>
+  <section id="sites" class="panel"></section>
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<noscript><p class="status">TapeKit Wallet needs JavaScript. / TapeKit 钱包需要开启 JavaScript。</p></noscript>
+</body>
+</html>

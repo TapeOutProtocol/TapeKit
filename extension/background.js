@@ -1,5 +1,10 @@
 // 地址栏：输入「tape 空格 4246.0」（其他链带区号：1.2.344）回车。设了网关域名就在网关的真实来源下打开；否则在扩展的查看器页里打开（沙盒预览）。
 import { getGateway, targetUrl } from './gateway.js';
+import { createWalletBackground } from './wallet/extension/background.js';
+
+// Wallet routing (wallet router design §10.1): injects the TapeKit wallet into gateway sites once the user
+// enables it in the popup, and routes their requests to the hub. Listeners register synchronously here.
+createWalletBackground({ chrome, getGateway, fetchImpl: (url, init) => fetch(url, init) });
 
 chrome.omnibox.onInputStarted.addListener(() => {
   chrome.omnibox.setDefaultSuggestion({ description: '打开链上网站：输入 4246.0、#4246@0、1.2.344（X Layer）、1.3.5（Base）或容器地址' });
