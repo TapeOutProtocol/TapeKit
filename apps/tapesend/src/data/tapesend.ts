@@ -32,7 +32,7 @@ export interface Endpoint {
   opened: boolean;
   key: { suite: number; keyIndex: number; key: Hex; usable: boolean; version: number; current: Hex; chains: number[]; chainsBits: bigint };
   /** TAP-10 §3.5：工厂封印没生效时，控制工厂的人可以冒充任何端点 */
-  factory: { sealed: boolean; inEffect: boolean; circuitsIntact: boolean; lostSeal?: boolean };
+  factory: { sealed: boolean; inEffect: boolean; circuitsIntact: boolean; frozen?: boolean; lostSeal?: boolean };
   /** TAP-10 §3.6：消息合约自己的封印状态。没封印时 owner 可以换掉实现，同样能冒充任何端点 */
   hub: { sealed: boolean; owner: string; implementation: string; expectedImplementation: boolean; inEffect: boolean };
   block: string;
@@ -1016,13 +1016,14 @@ export function replySubject(raw: string): string {
 
 /**
  * 粘滞的安全状态（TAP-10 §3.5、§8.7）：电路合约一旦被发现更换就一直停用；
- * 工厂封印曾经生效、之后在不低于那次的区块上又读到不生效，就一直警告（临时替换再换回来，本机记住的状态不会恢复）。
+ * 工厂封印曾经生效（或处理器曾经读到已冻结）、之后在不低于那次的区块上又读到不生效，就一直警告
+ * （临时替换再换回来，本机记住的状态不会恢复；冻结在链上不可撤销，读到撤销只能是节点有问题）。
  * 用区块号比较，避免节点故障时先读到新块、后读到旧块造成误报。
  */
 // 各链中枢地址相同：按"链号 + 中枢"区分，多链启用后各链的封印状态不会互相覆盖
 const stickyKey = (chainId: number) => `tapesend:sticky:${chainId}:${hubAddress.toLowerCase()}`;
 export function stickyFactory(f: Endpoint['factory'], block: string, chainId: number): Endpoint['factory'] {
-  let st = { circuitsChanged: false, inEffectAt: '', lostSeal: false };
+  let st = { circuitsChanged: false, inEffectAt: '', frozenAt: '', lostSeal: false };
   try {
     st = { ...st, ...JSON.parse(localStorage.getItem(stickyKey(chainId)) ?? '{}') };
   } catch {
@@ -1035,17 +1036,21 @@ export function stickyFactory(f: Endpoint['factory'], block: string, chainId: nu
     return { ...f, lostSeal: st.lostSeal };
   }
   const firstInEffect = st.inEffectAt ? BigInt(st.inEffectAt) : null;
+  const firstFrozen = st.frozenAt ? BigInt(st.frozenAt) : null;
   const next = {
     circuitsChanged: st.circuitsChanged || !f.circuitsIntact,
     inEffectAt: f.inEffect && (firstInEffect === null || at < firstInEffect) ? at.toString() : st.inEffectAt,
-    lostSeal: st.lostSeal || (firstInEffect !== null && !f.inEffect && at >= firstInEffect),
+    frozenAt: f.frozen && (firstFrozen === null || at < firstFrozen) ? at.toString() : st.frozenAt,
+    lostSeal: st.lostSeal
+      || (firstInEffect !== null && !f.inEffect && at >= firstInEffect)
+      || (firstFrozen !== null && !f.frozen && at >= firstFrozen),
   };
   try {
     localStorage.setItem(stickyKey(chainId), JSON.stringify(next));
   } catch {
     // 忽略
   }
-  return { sealed: f.sealed, inEffect: f.inEffect && !next.lostSeal, circuitsIntact: f.circuitsIntact && !next.circuitsChanged, lostSeal: next.lostSeal };
+  return { sealed: f.sealed, inEffect: f.inEffect && !next.lostSeal, circuitsIntact: f.circuitsIntact && !next.circuitsChanged, frozen: Boolean(f.frozen) && !next.circuitsChanged && !next.lostSeal, lostSeal: next.lostSeal };
 }
 
 export const payloadLimit = 16_000;

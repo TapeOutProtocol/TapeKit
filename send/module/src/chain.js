@@ -134,7 +134,7 @@ export const normalizeReceipt = (r) => ({
 });
 export const normalizeHeader = (b) => ({ hash: hexField(b.hash, 32), number: q(b.number), parentHash: hexField(b.parentHash, 32), timestamp: q(b.timestamp) });
 
-/** TAP-10 §3.5：判断工厂封印所需的常量（BNB；各链的在 kernel/src/config.js 的 factorySeal 里） */
+/** TAP-10 §3.8：判断处理器冻结、工厂封印所需的常量（BNB；各链的在 kernel/src/config.js 的 factorySeal 里） */
 export const FACTORY_SEAL = Object.freeze({ ...BSC_MAINNET.factorySeal, implSlot: IMPL_SLOT });
 /** 某条链的工厂封印常量 */
 export const factorySealFor = (chainId) => {
@@ -244,8 +244,11 @@ export function createTapeSendChain(o = {}) {
   }
 
   /**
-   * TAP-10 §3.5：工厂封印状态，以及电路实现是否仍是钉住的那一份。
-   * @returns {Promise<{sealed: boolean, factoryImplementation: string, beaconOwner: string, circuitsIntact: boolean, inEffect: boolean}>}
+   * TAP-10 §3.8：处理器是否已冻结、工厂封印是否生效，以及电路实现是否仍是钉住的那一份。
+   * frozen：电路 beacon 已无主且指向钉住的实现。从此谁都改不了已建成处理器的代码，
+   *   已有电路容器的持有人与公钥不会再被工厂冒充；但工厂本身仍可升级（处理器编号表、登记名单仍由它提供）。
+   * inEffect：在 frozen 的基础上工厂也已封印、工厂实现是钉住的那一份，此后工厂也不能再改。
+   * @returns {Promise<{sealed: boolean, factoryImplementation: string, beaconOwner: string, circuitsIntact: boolean, frozen: boolean, inEffect: boolean}>}
    */
   async function factoryStatus(block) {
     const items = [
@@ -265,9 +268,10 @@ export function createTapeSendChain(o = {}) {
     const sealed = !sealedR.revert && sealedR[0] === true;
     const beaconOwner = ownerR.revert ? '' : lower(ownerR[0]);
     const circuitsIntact = !implR.revert && lower(implR[0]) === seal.circuitImplementation;
+    const frozen = circuitsIntact && beaconOwner === '0x' + '0'.repeat(40);
     return {
-      sealed, factoryImplementation, beaconOwner, circuitsIntact,
-      inEffect: sealed && factoryImplementation === seal.implementation && beaconOwner === lower(net.factory) && circuitsIntact,
+      sealed, factoryImplementation, beaconOwner, circuitsIntact, frozen,
+      inEffect: frozen && sealed && factoryImplementation === seal.implementation,
     };
   }
 

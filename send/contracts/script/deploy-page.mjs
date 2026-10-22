@@ -182,7 +182,8 @@ const BOOT_DATA=${JSON.stringify(SALT_BOOT + bootCreation.slice(2))};
 const PROXY_SALT=${JSON.stringify(SALT_PROXY)};
 const PROXY_CREATION=${JSON.stringify(proxyCreation)};
 const CHAINS=${JSON.stringify(chainData)};
-const FACTORY_IMPL={56:'0xa68ccf4931d98ad0a4be15ee40542edc0dec6422',8453:'0x74956236ab64ed143933040b4137e8a352e4d17b',196:'0x74956236ab64ed143933040b4137e8a352e4d17b'};
+// 2026-10-22 冻结已建成处理器后的工厂实现（之前三条链是 0xa68ccf49… / 0x74956236…）
+const FACTORY_IMPL={56:'0x77080dd83c16bdf6d71055c3a191fc890b5a8fe2',8453:'0xefc6b7eaea35a4894c980b74cb1d5d468ae2b4d4',196:'0xb41c1e7602eb5734be2430b72178ccb814a5293d'};
 const SEL={registry:'0x7b103999',accountImplementation:'0x11464fbe',factory:'0xc45a0155',payments:'0xa6d23e10',circuitBeacon:'0xddcb22fa',circuitImplementation:'0x14f96a60'};
 const IMPL_SLOT='0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
 const $=(id)=>document.getElementById(id);
@@ -261,29 +262,33 @@ async function refresh(){
   const implOk=c.impl?has(await rpc('eth_getCode',[c.impl.address,'latest'])):false;
   const current=hubOk?await readImplSlot(hubAddress):null;
   const upgraded=!!(c.impl&&current===c.impl.address.toLowerCase());
-  // 封印前提：该链 TapeOut 工厂已封印（否则电路合约再升级会让封印后的中枢永久停用）
-  let factorySealed=false;
-  if(c.impl){try{factorySealed=parseInt(await rpc('eth_call',[{to:c.impl.expect.factory,data:'0x631f9852'},'latest']),16)===1}catch{factorySealed=false}}
-  // 与客户端 factoryStatus 的"封印生效"同一套条件：工厂实现是钉住的那一份、beacon 的 owner 是工厂、beacon 指向钉住的电路实现。
-  // 只看 isSealed 不够：beacon 归别人所有时，它换掉电路实现，已封印的中枢会永久停用
-  if(factorySealed){
+  // 封印前提：已建成处理器的代码已冻结——电路 beacon 无主、指向钉住的电路实现（TAP-10 §3.8）。
+  // 否则电路实现一旦被长期替换，已封印的中枢会永久停用。与客户端 factoryStatus 的 frozen 同一套条件。
+  // 冻结之后工厂本身仍可升级：它不能再改电路合约，但仍能改登记名单（isCPU，可让真处理器的写入被拒）和处理器编号表。
+  // 工厂也已封印（实现是钉住的那一份）时，这两点也一并锁死。
+  let frozen=false,factorySealed=false;
+  if(c.impl){
     try{
       const e=c.impl.expect;
-      const fImpl=await readImplSlot(e.factory);
       const bOwner='0x'+(await rpc('eth_call',[{to:e.circuitBeacon,data:'0x8da5cb5b'},'latest'])).slice(-40);
       const bImpl='0x'+(await rpc('eth_call',[{to:e.circuitBeacon,data:'0x5c60da1b'},'latest'])).slice(-40);
-      const pinned=FACTORY_IMPL[chainId()];
-      factorySealed=!!pinned&&fImpl===pinned&&bOwner.toLowerCase()===e.factory.toLowerCase()&&bImpl.toLowerCase()===e.circuitImplementation.toLowerCase();
-      if(!factorySealed)log('工厂虽已封印，但工厂实现、beacon 的 owner 或电路实现与钉住的不符：不能封印中枢。','bad');
-    }catch{factorySealed=false}
+      frozen=bOwner==='0x'+'0'.repeat(40)&&bImpl.toLowerCase()===e.circuitImplementation.toLowerCase();
+      if(frozen){
+        const sealedNow=parseInt(await rpc('eth_call',[{to:e.factory,data:'0x631f9852'},'latest']),16)===1;
+        const fImpl=await readImplSlot(e.factory);
+        const pinned=FACTORY_IMPL[chainId()];
+        factorySealed=sealedNow&&!!pinned&&fImpl===pinned;
+      }
+    }catch{frozen=false;factorySealed=false}
   }
   log(c.name+'：启动实现'+(bootOk?'已部署':'未部署')+'，中枢'+(hubOk?'已部署':'未部署')+(c.impl?'，正式实现'+(implOk?'已部署':'未部署')+'，中枢'+(upgraded?'已切换到正式实现':'尚未切换'):''));
   $('deployBoot').disabled=bootOk;
   $('deployProxy').disabled=!bootOk||hubOk;
   $('deployImpl').disabled=!c.impl||implOk;
   $('upgrade').disabled=!c.impl||!hubOk||!implOk||upgraded;
-  $('seal').disabled=!upgraded||!factorySealed;
-  if(upgraded&&!factorySealed)log('该链 TapeOut 工厂尚未封印：中枢暂时不能封印。','bad');
+  $('seal').disabled=!upgraded||!frozen;
+  if(upgraded&&!frozen)log('该链已建成处理器的代码尚未冻结（电路 beacon 仍有主人，或电路实现与钉住的不符）：中枢暂时不能封印。','bad');
+  else if(upgraded&&!factorySealed)log('处理器已冻结，可以封印中枢。注意：工厂本身仍可升级，它能改登记名单（让真处理器的写入被拒）和处理器编号表，但不能冒充已有的电路容器。');
 }
 
 $('connect').onclick=async()=>{

@@ -379,7 +379,10 @@ test('multi-chain: labels with area codes, input → chain, chain instances use 
   assert.equal(base.rpc.pin, 'latest');
   assert.equal(bnb.rpc.pin, 'latest');
   assert.equal(bnb.factorySeal.implementation, FACTORY_SEAL.implementation);
-  assert.equal(base.factorySeal.implementation, '0x74956236ab64ed143933040b4137e8a352e4d17b');
+  // 2026-10-22 冻结后两条 L2 各自的工厂实现不同
+  assert.equal(base.factorySeal.implementation, '0xefc6b7eaea35a4894c980b74cb1d5d468ae2b4d4');
+  assert.equal(x.factorySeal.implementation, '0xb41c1e7602eb5734be2430b72178ccb814a5293d');
+  assert.equal(FACTORY_SEAL.implementation, '0x77080dd83c16bdf6d71055c3a191fc890b5a8fe2');
   assert.equal(x.factorySeal.circuitBeacon, '0xf70d1ed4f62cf3780157b0b421b7e2f45bd0991c');
   assert.equal(factorySealFor(196).circuitImplementation, '0x977f217887e085d298cb3819cdad5a0ee35f29b2');
   assert.equal(factorySealFor(42161), null);

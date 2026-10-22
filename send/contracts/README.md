@@ -18,4 +18,4 @@ node script/deploy-page.mjs                           # 生成 dist/deploy-deweb
 
 构建可复现（solc 0.8.28，optimizer 10,000 runs，EVM `shanghai`，无元数据哈希）。`DeWebAdminBoot.sol` 是冻结的，改它会改变启动实现和中枢地址。
 
-注意：`seal()` 合约本身不检查工厂是否已封印，这个前提由部署页把关（工厂已封印、工厂实现是钉住的那份、beacon 归工厂、电路实现未被换），属于操作规程。`seal()` does not itself check that the factory is sealed; the deploy page enforces it.
+注意：`seal()` 合约本身不检查已建成处理器是否已冻结，这个前提由部署页把关（电路 beacon 已无主、电路实现未被换；2026-10-22 起三条链均已满足），属于操作规程。`seal()` does not itself check that the processors are frozen (circuit beacon ownerless, circuit implementation unchanged); the deploy page enforces it.

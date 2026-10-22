@@ -63,9 +63,10 @@ export const BSC_MAINNET = Object.freeze({
     'https://bsc-mainnet.public.blastapi.io': Object.freeze({ maxBatch: 10, operator: 'alchemy', callerKeys: true }),
     'https://bsc.drpc.org': Object.freeze({ maxBatch: 3, operator: 'drpc', callerKeys: true }),
   }),
-  // TapeSend 判断处理器工厂是否已封印所需的常量（TAP-10 §3.5）
+  // TapeSend 判断处理器是否已冻结、工厂是否已封印所需的常量（TAP-10 §3.8）。
+  // implementation 是 2026-10-22 冻结已建成处理器后的工厂实现（之前是 0xa68ccf49…）
   factorySeal: Object.freeze({
-    implementation: '0xa68ccf4931d98ad0a4be15ee40542edc0dec6422',
+    implementation: '0x77080dd83c16bdf6d71055c3a191fc890b5a8fe2',
     circuitBeacon: '0xf8d6d8eb894d6971c8976ad8b4971cbefe028156',
     circuitImplementation: '0x8e1d125def6d3826c278299273a0760d47626068',
   }),
@@ -81,11 +82,6 @@ const L2_CONTRACTS = Object.freeze({
   expectedImpl: Object.freeze({
     '0xd6efb7adcc9c83dc4924ad56f6a8e4e969b9adb6': Object.freeze(['0xa85c4143d1d4a77f54b8e4ecc9e6d1418afea45f']),
     '0x68809fd2fb343aa57d0aeb7f33defe477c9666f9': Object.freeze(['0x5ebf29b80789e548907c707530c3c7607c4347df']),
-  }),
-  factorySeal: Object.freeze({
-    implementation: '0x74956236ab64ed143933040b4137e8a352e4d17b',
-    circuitBeacon: '0xf70d1ed4f62cf3780157b0b421b7e2f45bd0991c',
-    circuitImplementation: '0x977f217887e085d298cb3819cdad5a0ee35f29b2',
   }),
   nameSuffix: 'tape',
   // 读取和 BNB 一样钉在最新块往回 2 块：消息、网站几秒内就能看到。
@@ -106,6 +102,12 @@ export const XLAYER_MAINNET = Object.freeze({
   currency: 'OKB',
   area: 2,
   ...L2_CONTRACTS,
+  // 两条 L2 的工厂代理地址相同，但 2026-10-22 冻结时各自部署了新的工厂实现，地址不同
+  factorySeal: Object.freeze({
+    implementation: '0xb41c1e7602eb5734be2430b72178ccb814a5293d',
+    circuitBeacon: '0xf70d1ed4f62cf3780157b0b421b7e2f45bd0991c',
+    circuitImplementation: '0x977f217887e085d298cb3819cdad5a0ee35f29b2',
+  }),
   // 2026-09-19 实测：都允许浏览器跨域调用，都能读 safe 区块、事件和整块收据。
   // 独立运营方实际只有两家：OKX（两个域名；它也是 X Layer 的排序器）和 dRPC。
   // thirdweb 的 X Layer 节点对未知方法、超范围区块的报错和 OKX 逐字相同（它在 Base、BNB 上的报错格式不同），
@@ -132,6 +134,11 @@ export const BASE_MAINNET = Object.freeze({
   currency: 'ETH',
   area: 3,
   ...L2_CONTRACTS,
+  factorySeal: Object.freeze({
+    implementation: '0xefc6b7eaea35a4894c980b74cb1d5d468ae2b4d4',
+    circuitBeacon: '0xf70d1ed4f62cf3780157b0b421b7e2f45bd0991c',
+    circuitImplementation: '0x977f217887e085d298cb3819cdad5a0ee35f29b2',
+  }),
   // 2026-09-19 实测：五家不同运营方，都允许跨域、能读 safe 区块和事件。
   // 1rpc.io、blastapi、llamarpc 限流严重或不可用，不作默认。
   rpcs: Object.freeze([

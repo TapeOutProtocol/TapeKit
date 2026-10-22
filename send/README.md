@@ -59,7 +59,7 @@ The hub has the same address on every chain (deterministic boot implementation +
 3. **Known limitations, handled only in the client:** anyone with an opened container can flood an inbox (the client shows at most 3 messages per stranger per page); a contract that the holder approved for the circuit NFT (for example a marketplace) can borrow it within one transaction and send as the container (the client flags messages not sent directly by the holder's wallet).
 
 1. **中枢在 `seal()` 之前可以升级。** 在此之前，owner 可以更换实现，从而伪造消息或替换公钥。客户端会核对实现是否在认可名单里，但证明不了升级过程中存储没被改写。逻辑稳定后尽快封印。
-2. **先封印 TapeOut 处理器工厂，再封印中枢。** 中枢钉住了当前的电路实现；中枢封印后如果电路合约被升级，中枢会永久停用。`seal()` 本身不检查这一点，由部署页把关（工厂已封印、工厂实现是钉住的那份、beacon 归工厂、电路实现未变）。
+2. **先冻结已建成的处理器，再封印中枢。** 中枢钉住了当前的电路实现；中枢封印后如果电路合约被升级，中枢会永久停用。`seal()` 本身不检查这一点，由部署页把关（电路 beacon 已无主、电路实现未变）。2026-10-22 起 BNB、X Layer、Base 三条链的处理器都已冻结。冻结后工厂本身仍可升级：它不能再冒充已有的电路容器，但仍能改登记名单（让真处理器的写入被拒）和处理器编号表（影响新输入的名字解析到哪个地址）。
 3. **只在客户端处理的已知限制：** 任何有已开通容器的人都能往别人信箱里刷消息（客户端对陌生发件人每页只显示 3 条）；持有人授权过电路 NFT 的合约（例如交易市场）可以在一笔交易里借走电路、以容器身份发消息（客户端会标出不是由持有人钱包直接发出的消息）。
 
 ## Tests / 测试

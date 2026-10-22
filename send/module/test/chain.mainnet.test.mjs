@@ -70,7 +70,7 @@ import { createTapeSendChains, hubImplementationsFor } from '../src/chain.js';
 const l2 = createTapeSendChains();
 
 for (const [id, name] of [[8453, 'Base'], [196, 'X Layer']]) {
-  test(`${name}: nodes agree on the chain, hub implementation is on the allow-list, factory not sealed yet`, async () => {
+  test(`${name}: nodes agree on the chain, hub implementation is on the allow-list, processors frozen, factory not sealed yet`, async () => {
     const c = l2.get(id);
     await c.assertChain();
     const block = await c.rpc.pinBlock();
@@ -80,8 +80,12 @@ for (const [id, name] of [[8453, 'Base'], [196, 'X Layer']]) {
     assert.equal(hub.sealed, false);
     assert.equal(hub.owner, '0x571d447f4f24688ec35ccf07f1d6993655f6af15');
     assert.equal(factory.factoryImplementation, c.factorySeal.implementation, 'factory implementation slot matches the pinned value');
-    assert.equal(factory.beaconOwner, c.network.factory, 'circuit beacon is owned by the factory');
+    // 2026-10-22 起两个 beacon 已无主：已建成处理器的代码永久冻结
+    assert.equal(factory.beaconOwner, '0x' + '0'.repeat(40), 'circuit beacon has no owner (processors frozen)');
     assert.equal(factory.circuitsIntact, true);
+    assert.equal(factory.frozen, true);
+    assert.equal(factory.sealed, false);
+    assert.equal(factory.inEffect, false);
     const F = await c.finalizedBlock();
     assert.ok(F === null || F <= BigInt(block) + 1000n);
   });
