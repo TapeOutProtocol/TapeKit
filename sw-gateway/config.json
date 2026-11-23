@@ -1,6 +1,14 @@
 {
-  "_comment": "网关架设者的配置。rpcUrls 留空用内核默认的 4 家公共节点；要加自己的节点请写限流代理地址，不要把带密钥的地址写进这个公开文件。reportUrl 里的 {name} 会换成链上名字。",
-  "rpcUrls": [],
+  "_comment": "网关架设者的配置。rpcUrls 为空用内核默认的公共节点；可写数组（只换 BNB）或按链名分别写（xlayer / bnb / base，写了就整条链换成这份名单，所以要连同默认节点一起写）。要加自己的节点请写限流代理地址，不要把带密钥的地址写进这个公开文件。reportUrl 里的 {name} 会换成链上名字。",
+  "rpcUrls": {
+    "xlayer": [
+      "https://rpc.xlayer.tech",
+      "https://xlayerrpc.okx.com",
+      "https://xlayer.drpc.org",
+      "https://196.rpc.thirdweb.com",
+      "https://tapetape.org/rpc/196"
+    ]
+  },
   "blocklistUrl": "/.tape/blocklist.txt",
   "reportUrl": "/.tape/policy.html"
 }

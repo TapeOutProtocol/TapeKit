@@ -7,6 +7,15 @@
 import { createKernel, createMemoryCache, parseHostLabel, formatName, setLocale, statusText, InputError, KernelError } from '../kernel/src/index.js';
 import { messagePage, pickLocale } from './pages.js';
 import { OPEN_SUFFIX, GATEWAY_PATHS, LOCKED_CSP, docPage, fileResponse } from './serve.js';
+// rpcUrls：数组 = 只换 BNB 的节点（旧写法）；对象 = 按链名或链号分别换（{"xlayer": [...]}）。只认 https 地址
+const rpcUrlsOf = (c) => {
+  const ok = (l) => Array.isArray(l) ? l.filter((u) => typeof u === 'string' && /^https:\/\//.test(u)) : [];
+  if (Array.isArray(c)) { const l = ok(c); return l.length ? l : undefined; }
+  if (!c || typeof c !== 'object') return undefined;
+  const out = {};
+  for (const [k, v] of Object.entries(c)) { const l = ok(v); if (l.length) out[k] = l; }
+  return Object.keys(out).length ? out : undefined;
+};
 
 /** 4246-0-open.网关域名 → 链上名字 + 自验档的主机名；不是兼容档的主机名返回 null */
 function openHost(hostname) {
@@ -26,7 +35,7 @@ function kernelOf(env, origin) {
   // 失败要把这个 promise 清掉：否则一次读不到配置，之后每个请求都拿到同一个已经失败的 promise
   booting ||= (async () => {
     hostConfig = JSON.parse((await assetText(env, origin, '/.tape/config.json')) || '{}');
-    const rpcUrls = Array.isArray(hostConfig.rpcUrls) && hostConfig.rpcUrls.length ? hostConfig.rpcUrls : undefined;
+    const rpcUrls = rpcUrlsOf(hostConfig.rpcUrls);
     // 屏蔽名单在这一档也必须生效：否则兼容档就成了绕过名单的后门
     return createKernel({ cache: createMemoryCache(), rpcUrls, isBlocked: ({ container, name }) => blocklist.has(String(container).toLowerCase()) || blocklist.has(name) });
   })().catch((e) => { booting = null; throw e; });

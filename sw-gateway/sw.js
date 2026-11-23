@@ -11,6 +11,15 @@
 import { createKernel, createIdbCache, createMemoryCache, InputError, RpcError, scanHtml, scanCss, setLocale, statusText, BSC_MAINNET, formatName, parseHostLabel, networkByArea, networkByChainId, siteNodes } from './.tape/kernel/index.js';
 import { statusPage, messagePage, pickLocale, tr } from './.tape/pages.js';
 import { SITE_CSP, LOCKED_CSP, GATEWAY_PATHS as NETWORK_PATHS, OPEN_SUFFIX, docPage as html, withCharset, isHtml, isCss, fileResponse } from './.tape/serve.js';
+// rpcUrls：数组 = 只换 BNB 的节点（旧写法）；对象 = 按链名或链号分别换（{"xlayer": [...]}）。只认 https 地址
+const rpcUrlsOf = (c) => {
+  const ok = (l) => Array.isArray(l) ? l.filter((u) => typeof u === 'string' && /^https:\/\//.test(u)) : [];
+  if (Array.isArray(c)) { const l = ok(c); return l.length ? l : undefined; }
+  if (!c || typeof c !== 'object') return undefined;
+  const out = {};
+  for (const [k, v] of Object.entries(c)) { const l = ok(v); if (l.length) out[k] = l; }
+  return Object.keys(out).length ? out : undefined;
+};
 
 const VERSION = '0.3.0';   // 0.3.0：链外访问放行并记录，脚本只能来自链上；0.2.0：三链（区号）、网站 CSP、去掉可被网站改写的节点设置
 const SETTINGS_KEY = 'gw-settings:v1';
@@ -31,7 +40,7 @@ async function boot() {
   delete settings.allowOffchain; delete settings.rpcUrls;
   hostConfig = await fetch('/.tape/config.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   // 节点只来自网关运营方的配置（config.json），访客和网站都改不了
-  const rpcUrls = Array.isArray(hostConfig.rpcUrls) && hostConfig.rpcUrls.length ? hostConfig.rpcUrls : undefined;
+  const rpcUrls = rpcUrlsOf(hostConfig.rpcUrls);
   kernel = createKernel({ cache, rpcUrls, locale: settings.locale, isBlocked: ({ container, name }) => blocklist.has(container.toLowerCase()) || blocklist.has(name) || settings.userBlocklist.includes(name) });
 }
 const saveSettings = () => cache.set(SETTINGS_KEY, settings, new Uint8Array());
